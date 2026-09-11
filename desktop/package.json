@@ -1,0 +1,68 @@
+{
+  "name": "codex-link-desktop",
+  "version": "0.2.0",
+  "description": "OAuth-protected MCP server for local files, shell commands and optional desktop control",
+  "main": "main.cjs",
+  "private": true,
+  "license": "MIT",
+  "author": "Codex Link contributors",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.16.1"
+  },
+  "build": {
+    "appId": "dev.codexlink.desktop",
+    "productName": "Codex Link",
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../src",
+        "to": "bridge/src"
+      },
+      {
+        "from": "../ui",
+        "to": "bridge/ui"
+      },
+      {
+        "from": "../computer",
+        "to": "bridge/computer",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!bin/**",
+          "!windows/bin/**",
+          "!windows/obj/**"
+        ]
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "beforePack": "./native-before-pack.cjs",
+    "afterPack": "./native-after-pack.cjs"
+  }
+}

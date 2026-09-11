@@ -1,0 +1,37 @@
+{
+  "project": "Codex Link",
+  "version": "0.2.0",
+  "created": "2026-09-10",
+  "entrypoints": {
+    "browser": "npm start",
+    "windowsSetup": "scripts/setup-windows.ps1",
+    "macosSetup": "scripts/setup-macos.sh",
+    "desktop": "npm run desktop"
+  },
+  "runtime": {
+    "node": ">=22",
+    "coreRuntimeNpmDependencies": 0
+  },
+  "implementedMcpTools": 16,
+  "defaultAdvertisedMcpTools": 16,
+  "localValidation": {
+    "nodeTests": 39,
+    "passed": 38,
+    "failed": 0,
+    "skipped": 1,
+    "javascriptSyntax": "28/28 passed",
+    "browser": "Passed OAuth, MCP write approval, pause/resume and responsive checks",
+    "appleSiliconPackage": "Launch and setup rendering passed",
+    "dmgIntegrity": "Both verified"
+  },
+  "notVerifiedLive": [
+    "ChatGPT production connector",
+    "Tailscale Funnel",
+    "Windows installer execution",
+    "Intel Mac execution",
+    "desktop capture/input"
+  ],
+  "browserTestNote": "Real Chromium and local HTTP OAuth/MCP server; final external ChatGPT callback intercepted.",
+  "license": "MIT",
+  "documentation": "README.md"
+}

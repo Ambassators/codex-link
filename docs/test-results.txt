@@ -1,0 +1,51 @@
+
+> codex-link@0.2.0 test
+> node --test --test-concurrency=1 test/*.test.mjs
+
+✔ HTTP OAuth discovery, DCR, browser pairing, consent, PKCE token and authenticated MCP (101.447458ms)
+✔ public transport never exposes admin APIs; Host/Origin and bearer are checked (51.487208ms)
+✔ MCP validates negotiation, notifications, JSON, scopes and tool argument schemas (68.23425ms)
+✔ end-to-end MCP file job cannot write before local approval; CAS/idempotency and polling work (116.247875ms)
+✔ real default shell execution is approval-gated and emits stdout; stop pauses remote access (95.98525ms)
+✔ real ripgrep uses pattern data, not shell code, and returns no-match normally (82.61ms)
+✔ MCP image read returns typed bytes; admin activity follows newest events (62.138459ms)
+✔ local engine routes and local tool execution are removed (61.118125ms)
+✔ desktop folder picker only runs through the authenticated owner API (39.753792ms)
+✔ writes do not execute before approval; denial does not run them (53.219208ms)
+✔ approval executes once and results are isolated by client and scope (52.6595ms)
+✔ restart marks pending jobs interrupted rather than replaying (40.986667ms)
+✔ shutdown waits for cooperative cancellation and rejects new jobs (84.097833ms)
+✔ OAuth discovery uses canonical issuer and resource, S256 and DCR (16.608666ms)
+✔ complete owner-paired authorization, issuer echo, bearer and code single-use (32.957208ms)
+✔ unpaired browser cannot approve and pairing tickets are single-use (23.821875ms)
+✔ reject non-allowlisted redirects, PKCE downgrade and scope escalation (42.136291ms)
+✔ resource binding rejects an intercepted code sent to another audience (28.803ms)
+✔ refresh rotation detects replay and immediately revokes the entire family (43.204875ms)
+✔ opaque grants persist across restart, while owner browser sessions do not (40.681042ms)
+✔ confidential DCR clients require the registered authentication method (22.763291ms)
+✔ expired access token and changed issuer are rejected (63.308917ms)
+✔ prototype property names are never treated as registered OAuth clients (17.935375ms)
+✔ DCR clients remain valid after authorization revocation and token expiry (41.788042ms)
+✔ removed engine scopes are never advertised (17.134625ms)
+✔ real subprocess supports Unicode stdin/stdout and non-zero exit reporting (31.443ms)
+✔ real subprocess abort terminates running work (43.999667ms)
+✔ real subprocess deadline terminates running work (53.191542ms)
+﹣ PowerShell command generation uses encoded UTF-16 instead of shell interpolation (0.16475ms) # Windows-only command-generation assertion
+✔ subprocess output overflow fails even if the final chunk crosses the limit (24.360292ms)
+✔ Tailscale adapter logs in and forwards only the public listener (167.526833ms)
+✔ Tailscale adapter refuses to overwrite an existing listener (57.722375ms)
+✔ failed Tailscale publication restores the prior OAuth issuer (87.688584ms)
+✔ create/read/compare-and-swap/edit preserve UTF-8 and reject stale writes (27.36375ms)
+✔ reject POSIX/Windows traversal, alternate streams, drive paths and reserved names (13.628334ms)
+✔ reject symlink escape and hard-link overwrite (14.240875ms)
+✔ concurrent writes serialize and only one compare-and-swap succeeds (22.78625ms)
+✔ literal replacement does not expand $ replacement sequences (22.965042ms)
+✔ image payload signatures are verified (0.175208ms)
+ℹ tests 39
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 2126.279084

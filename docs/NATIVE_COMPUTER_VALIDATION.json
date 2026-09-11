@@ -1,0 +1,47 @@
+{
+  "verifiedAt": "2026-09-11T01:37:15.112Z",
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "tests": {
+    "total": 77,
+    "passed": 75,
+    "failed": 0,
+    "skipped": [
+      "ripgrep not installed",
+      "Windows-only PowerShell command-generation test on macOS"
+    ]
+  },
+  "syntax": {
+    "checked": 39,
+    "passed": 39
+  },
+  "nativeBuilds": [
+    "darwin-arm64",
+    "darwin-x64",
+    "win32-x64",
+    "win32-arm64"
+  ],
+  "nativeSelfTestsExecuted": [
+    "darwin-arm64"
+  ],
+  "previewApp": "release/native-computer-preview/mac-arm64/Codex Link.app",
+  "previewAppLaunched": false,
+  "verifiedPackageSourceMatches": true,
+  "extraPlatformBinariesExcluded": true,
+  "liveDesktopTestsPerformed": false,
+  "osComputerPermissionsGranted": false,
+  "liveBridgeRestarted": false,
+  "limitations": [
+    "No verified 1:1 Codex parity",
+    "No independent system cursor",
+    "No locked-use authorization extension",
+    "Windows native binaries cross-compiled, not run on Windows",
+    "Real-app capture/input compatibility not established",
+    "Preview app is unsigned/not notarized"
+  ],
+  "coreBackup": ".backups/before-native-computer-20260910.tar.gz",
+  "additionalMetadataBackup": ".backups/native-computer-original-extra",
+  "buildToolNote": "Cross-compilation used a project-local .NET SDK under generated/native-computer-build. Its first-run output reported creating a development HTTPS certificate; this task did not trust that certificate. Later invocations disabled first-run certificate generation."
+}

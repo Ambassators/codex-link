@@ -1,0 +1,19 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+coverage/
+release/
+*.zip
+.codex-link/
+generated/
+__pycache__/
+*.pyc
+
+# Local rollback snapshots and native build outputs
+.backups/
+computer/bin/
+computer/windows/bin/
+computer/windows/obj/

@@ -1,0 +1,12 @@
+{
+  "publicPort": 43121,
+  "adminPort": 43120,
+  "funnelPort": 443,
+  "redirectUris": [
+    "https://chatgpt.com/connector_platform_oauth_redirect"
+  ],
+  "remotePaused": false,
+  "autoApproveWrites": false,
+  "autoApproveShell": false,
+  "computerEnabledUntil": 0
+}

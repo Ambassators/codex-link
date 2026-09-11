@@ -1,0 +1,23 @@
+{
+  "name": "codex-link",
+  "version": "0.2.0",
+  "description": "OAuth-protected MCP server for local files, shell commands and optional desktop control",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "dev": "node --watch src/main.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "setup": "node scripts/setup.mjs",
+    "desktop": "npm --prefix desktop start",
+    "computer:build": "node scripts/build-computer.mjs",
+    "computer:doctor": "node scripts/computer-doctor.mjs",
+    "computer:test": "node --test test/native-computer.test.mjs"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Codex Link</title><link rel="stylesheet" href="/style.css"><script src="/app.js" type="module"></script><script src="/native-computer.js" type="module"></script></head>
+<body>
+<header><div class="brand"><span class="mark" aria-hidden="true">C↗</span><div><h1>Codex Link</h1><p>MCP access to your computer</p></div></div><div class="header-actions"><span id="connection" class="pill">Connecting…</span><button id="stop" class="danger">Pause access</button></div></header>
+<div id="message" role="status" class="message hidden"></div>
+<main>
+<nav aria-label="Sections"><button class="tab active" data-tab="setup" aria-current="page">Connection</button><button class="tab" data-tab="activity">Activity <span id="approval-count" class="count">0</span></button><button class="tab" data-tab="permissions">Settings</button></nav>
+<section id="setup" class="tab-panel">
+<div class="page-heading"><h2 id="setup-title">Connect your computer</h2><p id="setup-description">Enable the connection, connect ChatGPT, then bring in your projects.</p></div>
+<div class="setup-layout"><div class="setup-flow">
+<details id="step-network" class="setup-step"><summary><span class="step-number" aria-hidden="true">1</span><span><strong>Enable the connection</strong><small id="network-summary">Create a secure URL for this computer.</small></span><span id="network-state" class="step-state">Next</span></summary><div class="step-body">
+<p>Tailscale gives this computer a secure public URL. Only authorized MCP clients can use it.</p><p class="muted">Install Tailscale first if needed, then enable the connection. Tailscale may ask you to sign in or allow public sharing.</p>
+<div class="buttons"><button id="tailscale-enable" class="primary">Enable connection</button><a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Get Tailscale ↗</a></div>
+<div id="network-progress" role="status"></div><div id="network-links"></div>
+<details class="inline-details"><summary>I already have an HTTPS address</summary><form id="origin-form"><label for="origin">Server address, without /mcp</label><input id="origin" type="url" placeholder="https://your-host.example.com" required><p class="muted">Your reverse proxy must forward to the MCP port, 43121 by default.</p><button>Use this address</button></form></details>
+</div></details>
+<details id="step-client" class="setup-step"><summary><span class="step-number" aria-hidden="true">2</span><span><strong>Connect ChatGPT</strong><small id="client-summary">Copy the URL and authorize access.</small></span><span id="client-state" class="step-state">Next</span></summary><div class="step-body">
+<p>Keep this app and ChatGPT open side by side. Follow these steps to finish the connection.</p>
+<div class="endpoint"><label for="endpoint">MCP server URL</label><input id="endpoint" readonly placeholder="Enable the connection to get your URL"><button id="copy-endpoint" disabled>Copy URL</button></div>
+<ol class="instructions connection-instructions">
+<li><h3>Create the connection in ChatGPT</h3><p>Enable <strong>Developer mode</strong> in ChatGPT Settings, then create a connection from <a href="https://chatgpt.com/plugins" target="_blank" rel="noreferrer">Plugins ↗</a>. Name it <strong>Codex Link</strong>, paste the MCP server URL above, and choose <strong>OAuth</strong>.</p></li>
+<li><h3>Enter the OAuth settings in ChatGPT</h3><p>Under <strong>Client registration</strong>, use these values. Dynamic Client Registration (DCR) lets ChatGPT create its own client credentials.</p>
+<table class="connection-settings"><caption>ChatGPT OAuth settings</caption><tbody>
+<tr><th scope="row">Registration method</th><td><strong>Dynamic Client Registration (DCR)</strong></td></tr>
+<tr><th scope="row">OAuth Client ID / Client Secret</th><td>Leave empty if shown</td></tr>
+<tr><th scope="row">Token endpoint auth method</th><td><code>none</code></td></tr>
+<tr><th scope="row">Base scopes</th><td><code>bridge:read</code></td></tr>
+</tbody></table>
+<p>Under <strong>Scopes → Default scopes</strong>, paste these four lines:</p>
+<pre class="scope-values" aria-label="Default scopes to paste into ChatGPT">files:read
+files:write
+shell:execute
+computer:use</pre>
+<p class="muted">The computer:use permission is for optional desktop control. You still enable desktop control separately in Codex Link Settings.</p></li>
+<li><h3>Save ChatGPT’s callback URL in Codex Link</h3><p>After selecting DCR, copy the full <strong>Callback URL</strong> shown in ChatGPT. In this app, open <strong>Settings → Advanced → Allowed OAuth callbacks</strong>.</p><p>Add the copied URL on a new line, keep the existing addresses, and click <strong>Save callbacks</strong>. Return to <strong>Connection → Connect ChatGPT</strong> to continue.</p></li>
+<li><h3>Verify the browser you use for ChatGPT</h3><p>Click <strong>Verify my browser</strong>, then <strong>Open verification link</strong>. Open the link in the same browser and profile where ChatGPT is signed in. This confirms that you own this computer.</p><button id="pair" class="primary" disabled>Verify my browser</button><div id="pair-link"></div><p class="muted">Open the link within 90 seconds. If it expires, click Verify my browser again to create a new one.</p></li>
+<li><h3>Finish the connection in ChatGPT</h3><p>Return to ChatGPT and save the connection. Follow the authorization prompt, review the permissions, and select <strong>Authorize</strong>. Codex Link will show <strong>Client connected</strong> when authorization succeeds.</p></li>
+</ol>
+<p class="muted">Using another MCP client? Add the same URL with OAuth. Its callback address can be added in Settings → Advanced.</p>
+<a href="https://developers.openai.com/plugins/build/auth#client-registration" target="_blank" rel="noreferrer">ChatGPT OAuth setup help ↗</a>
+</div></details>
+<details id="step-projects" class="setup-step"><summary><span class="step-number" aria-hidden="true">3</span><span><strong>Bring in your projects</strong><small id="project-summary">Import your existing Codex work or add projects manually.</small></span><span id="projects-state" class="step-state">Next</span></summary><div class="step-body">
+<p>Your connection is ready. Choose how you want ChatGPT to access your existing work.</p>
+<div class="project-choices">
+<article class="project-choice"><h3>Import from Codex</h3><p>Find local Codex projects and index their conversations without copying or changing the original history.</p><button id="codex-import" class="primary">Import all from Codex</button><p id="codex-import-status" class="muted"></p></article>
+<article class="project-choice"><h3>Add projects manually</h3><p>Choose only the project folders you want to share. You can add more than one before finishing.</p><button id="manual-projects-toggle">Choose project folders...</button></article>
+</div>
+<div id="manual-projects" class="manual-projects hidden">
+<button id="choose-folder" class="primary" hidden>Choose project folder...</button>
+<details id="manual-folder" open><summary id="manual-folder-label" hidden>Enter a folder path instead</summary><form id="workspace-form"><label for="workspace-root">Project folder path</label><input id="workspace-root" placeholder="/Users/you/Projects/my-project" required autocomplete="off"><details class="inline-details"><summary>Give this project a name (optional)</summary><label for="workspace-name">Name shown to ChatGPT</label><input id="workspace-name" pattern="[A-Za-z0-9_-]{1,48}" placeholder="my-project"></details><button>Add project</button></form></details>
+</div>
+<div id="workspaces" class="stack"></div>
+<div class="buttons project-finish"><button id="projects-done">Done adding projects</button><button id="projects-skip" class="quiet">Skip for now</button></div>
+</div></details>
+<div id="ready" class="ready hidden"><h3>You're connected</h3><p>Open a chat, attach Codex Link, and ask:</p><blockquote id="example-prompt">List the folders available through Codex Link.</blockquote><p class="muted">Requests that need approval will appear in Activity. Keep this app running.</p><button id="show-activity">View activity</button></div>
+</div><aside class="setup-aside"><h3>Your computer stays yours</h3><p>ChatGPT sends requests through MCP. You review file changes and shell commands here before they run.</p><p class="muted">The control panel stays private on this computer. Desktop control is optional and disabled by default.</p><div class="connection-list"><h3>Connected clients</h3><div id="grants" class="stack"><p class="muted">Your connection will appear here after authorization.</p></div></div></aside></div>
+</section>
+<section id="activity" class="tab-panel hidden"><div class="page-heading"><h2>Incoming activity</h2><p>Requests from your connected MCP clients, and the actions they take.</p></div><div class="two-col"><div>
+<article class="card"><h3>Quick controls</h3><p class="muted">Dangerous mode skips local file-write and shell approvals and permanently enables the desktop lease. Native application approvals and OAuth scopes still apply.</p><div class="buttons"><button id="activity-dangerous" class="danger">Dangerously skip permissions</button><button id="activity-computer-permanent">Enable computer use permanently</button><button id="activity-permissions" class="quiet">Review approval settings</button></div><p id="activity-computer-status" class="muted"></p></article>
+<article class="card"><h3>Needs your approval</h3><div id="approvals" class="stack"><p class="muted">No requests need approval.</p></div></article>
+<article class="card"><h3>Recent requests</h3><div id="jobs" class="stack"><p class="muted">Ask ChatGPT to work with a shared folder. Requests will appear here.</p></div></article>
+</div><article class="card log-card"><div class="section-heading"><h3>Request details</h3><span id="job-state" class="pill">Select a request</span></div><div id="job-links"></div><div id="job-actions"></div><pre id="job-detail">Select a request to see its arguments, output and result.</pre></article></div></section>
+<section id="permissions" class="tab-panel hidden"><div class="page-heading"><h2>Settings</h2><p>Control what connected clients can do.</p></div><div class="two-col"><div>
+<article class="card"><h3>Approvals</h3><div id="settings"></div><p class="muted">Shell commands run as your OS user and can access files outside shared folders.</p></article>
+<article class="card"><h3>Desktop control <span class="pill">Optional</span></h3><p>Enable a desktop lease for 15 minutes, or enable persistent access from Activity. Native sessions additionally require approval for the selected application and input mode. macOS requires Accessibility and Screen Recording permission.</p><div class="buttons"><button id="computer-enable">Allow for 15 minutes</button><button id="computer-disable" class="quiet">Disable now</button></div><p id="computer-status" class="muted"></p><details><summary>Install the desktop helper</summary><p>From the source project, run:</p><code>npm run computer:build</code><p class="muted">Build on macOS 14+ with Xcode Command Line Tools, or on Windows with the .NET 10 SDK. Move the pointer to a screen corner to stop input; Escape is also a Windows fail-safe. Python is needed only for legacy compatibility.</p></details></article>
+<article id="native-computer-panel" class="card" aria-label="Native computer permissions"></article>
+</div><div><article class="card"><h3>Connection access</h3><div class="buttons"><button id="tailscale-disable">Disable public URL</button><button id="revoke" class="danger">Disconnect all clients</button></div><p class="muted">Disconnecting revokes access and stops active requests. Completed changes are kept.</p></article>
+<details class="card"><summary>Advanced</summary><div class="advanced-body"><h3>Connection diagnostics</h3><button id="diagnostics">Check dependencies</button><pre id="diagnostic-output">Not checked yet.</pre><h3>Allowed OAuth callbacks</h3><p class="muted">Copy the full Callback URL from ChatGPT’s Client registration section after selecting DCR. Add it on a new line below, keep the existing addresses, and save. Other MCP clients can provide their own callback URL.</p><form id="redirect-form"><label for="redirects">One exact HTTPS URL per line</label><textarea id="redirects" rows="3"></textarea><button>Save callbacks</button></form></div></details>
+</div></div></section>
+</main><footer>Codex Link 0.2 · MCP server · Keep this app open while connected</footer>
+</body></html>
