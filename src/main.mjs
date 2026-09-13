@@ -21,7 +21,7 @@ export function acquireLock(home) {
 export async function main() {
   const home = dataDirectory(), unlock = acquireLock(home);
   let bridge;
-  try { bridge = await createBridge({ home }); } catch (e) { unlock(); throw e; }
+  try { bridge = await createBridge({ home, autoEnableConnection: true }); } catch (e) { unlock(); throw e; }
   console.log(`\nCodex Link is running.\n\nOpen the PRIVATE local control panel:\n${bridge.adminUrl}\n\nDo not share this URL or expose port ${bridge.adminPort}.\nState directory: ${home}\nPress Ctrl+C to stop.\n`);
   if (process.env.CODEX_LINK_OPEN_BROWSER === '1') {
     let child;

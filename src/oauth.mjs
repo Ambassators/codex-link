@@ -3,6 +3,8 @@ import { Store, id, hash, challenge, equal, now, assert, HttpError, json, html, 
 import { SCOPES, DEFAULT_SCOPES } from './config.mjs';
 
 const COOKIE = '__Secure-codex_link_owner';
+// null explicitly means no time limit; missing/malformed expirations fail closed.
+const expired = (row, t = now()) => row.exp !== null && (!Number.isFinite(row.exp) || row.exp <= t);
 function page(title, content) {
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} · Codex Link</title><style>body{font:16px/1.6 system-ui;background:#111820;color:#e9f0f5;max-width:620px;margin:10vh auto;padding:28px}h1{line-height:1.15}button{padding:13px 22px;border:0;border-radius:8px;margin:10px 10px 0 0;cursor:pointer;font:inherit;background:#9de8cb;color:#12211c}code{overflow-wrap:anywhere}a{color:#9de8cb}.subtle{color:#aab8c4}li{margin:8px 0}</style><h1>${escapeHtml(title)}</h1>${content}</html>`;
 }
@@ -17,7 +19,24 @@ export class OAuth {
   constructor(config, audit = () => {}) {
     this.config = config; this.audit = audit;
     this.store = new Store(path.join(config.home, 'oauth.json'), { clients: {}, codes: {}, tokens: {}, refresh: {}, grants: {} });
+    this.migratePermanentTokens();
     this.tickets = new Map(); this.owners = new Map(); this.pending = new Map();
+  }
+  migratePermanentTokens() {
+    const d = this.store.data;
+    if (d.permanentTokensVersion === 1) return;
+    const t = now(), migrated = new Set();
+    for (const grant of Object.values(d.grants)) {
+      if (grant.revoked || expired(grant, t) || grant.issuer !== this.issuer || grant.resource !== this.resource) continue;
+      grant.exp = null; migrated.add(grant.id);
+    }
+    // Keep saved access tokens usable for still-authorized connections, even
+    // when their old one-hour lifetime has elapsed. Never revive revoked grants.
+    for (const token of Object.values(d.tokens)) if (migrated.has(token.grant)) token.exp = null;
+    for (const token of Object.values(d.refresh)) {
+      if (migrated.has(token.grant) && !expired(token, t)) token.exp = null;
+    }
+    d.permanentTokensVersion = 1; this.store.save();
   }
   get issuer() { return this.config.value.publicOrigin; }
   get resource() { return `${this.issuer}/mcp`; }
@@ -35,10 +54,11 @@ export class OAuth {
   resourceMetadata() { return { resource: this.resource, authorization_servers: [this.issuer], scopes_supported: SCOPES, bearer_methods_supported: ['header'], resource_name: 'Codex Link' }; }
   cleanup() {
     const t = now(), d = this.store.data;
-    for (const table of [d.codes, d.tokens, d.refresh]) for (const [k, v] of Object.entries(table)) if (v.exp <= t) delete table[k];
+    for (const [k, v] of Object.entries(d.codes)) if (v.exp <= t) delete d.codes[k];
+    for (const table of [d.tokens, d.refresh]) for (const [k, v] of Object.entries(table)) if (expired(v, t)) delete table[k];
     // Never expire a client that the owner has authorized: ChatGPT reuses its DCR client across reauthorization.
     for (const [k, v] of Object.entries(d.clients)) if (!v.authorizedAt && v.created + 86400 < t && !Object.values(d.grants).some(g => g.client_id === k)) delete d.clients[k];
-    for (const [k, v] of Object.entries(d.grants)) if (v.exp <= t) delete d.grants[k];
+    for (const [k, v] of Object.entries(d.grants)) if (expired(v, t)) delete d.grants[k];
     for (const table of [this.tickets, this.owners, this.pending]) for (const [k, v] of table) if (v.exp <= t) table.delete(k);
   }
   register(body) {
@@ -121,11 +141,12 @@ export class OAuth {
     return client;
   }
   issue(grant) {
-    const access = id(48), refresh = id(48), t = now();
-    this.store.data.tokens[hash(access)] = { grant: grant.id, exp: t + 3600 };
+    const access = id(48), refresh = id(48);
+    this.store.data.tokens[hash(access)] = { grant: grant.id, exp: null };
     this.store.data.refresh[hash(refresh)] = { grant: grant.id, exp: grant.exp, used: false };
     this.store.save();
-    return { access_token: access, token_type: 'Bearer', expires_in: 3600, refresh_token: refresh, scope: grant.scopes.join(' ') };
+    // OAuth expires_in is omitted because access tokens have no expiration.
+    return { access_token: access, token_type: 'Bearer', refresh_token: refresh, scope: grant.scopes.join(' ') };
   }
   token(body, authorization) {
     this.cleanup(); const d = this.store.data, client = this.authenticateClient(body, authorization);
@@ -135,12 +156,12 @@ export class OAuth {
       const valid = code.redirect_uri === body.redirect_uri && code.resource === body.resource && code.issuer === this.issuer && /^[A-Za-z0-9._~-]{43,128}$/.test(body.code_verifier || '') && equal(challenge(body.code_verifier), code.challenge);
       delete d.codes[key]; this.store.save();
       if (!valid) throw new HttpError(400, 'PKCE, redirect, or resource mismatch', 'invalid_grant');
-      const grant = { id: id(), client_id: client.client_id, scopes: code.scopes, issuer: code.issuer, resource: code.resource, created: now(), exp: now() + 30 * 86400, revoked: false };
+      const grant = { id: id(), client_id: client.client_id, scopes: code.scopes, issuer: code.issuer, resource: code.resource, created: now(), exp: null, revoked: false };
       d.grants[grant.id] = grant; return this.issue(grant);
     }
     if (body.grant_type === 'refresh_token') {
       const refresh = d.refresh[hash(String(body.refresh_token || ''))], grant = refresh && d.grants[refresh.grant];
-      if (!grant || grant.client_id !== client.client_id || grant.revoked || refresh.exp <= now() || grant.issuer !== this.issuer) throw new HttpError(400, 'Invalid refresh token', 'invalid_grant');
+      if (!grant || grant.client_id !== client.client_id || grant.revoked || expired(refresh) || expired(grant) || grant.issuer !== this.issuer) throw new HttpError(400, 'Invalid refresh token', 'invalid_grant');
       if (refresh.used) { grant.revoked = true; this.store.save(); this.audit('oauth.refresh_replay', { grant: grant.id }); throw new HttpError(400, 'Refresh token reuse: authorization revoked', 'invalid_grant'); }
       if (body.resource !== grant.resource) throw new HttpError(400, 'Resource mismatch', 'invalid_target');
       if (body.scope && body.scope.split(' ').filter(Boolean).some(s => !grant.scopes.includes(s))) throw new HttpError(400, 'Scope escalation is not allowed', 'invalid_scope');
@@ -153,7 +174,7 @@ export class OAuth {
   verify(header, scopes = []) {
     if (!/^Bearer [A-Za-z0-9_-]+$/i.test(header || '')) throw new HttpError(401, 'Bearer token required', 'invalid_token');
     const token = this.store.data.tokens[hash(header.slice(7))], grant = token && this.store.data.grants[token.grant];
-    if (!token || token.exp <= now() || !grant || grant.exp <= now() || grant.revoked || grant.issuer !== this.issuer || grant.resource !== this.resource) throw new HttpError(401, 'Invalid or expired bearer token', 'invalid_token');
+    if (!token || expired(token) || !grant || expired(grant) || grant.revoked || grant.issuer !== this.issuer || grant.resource !== this.resource) throw new HttpError(401, 'Invalid or expired bearer token', 'invalid_token');
     if (scopes.some(s => !grant.scopes.includes(s))) throw new HttpError(403, 'Insufficient OAuth scope', 'insufficient_scope');
     return { clientId: grant.client_id, grantId: grant.id, scopes: grant.scopes };
   }

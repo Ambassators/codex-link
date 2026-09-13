@@ -42,7 +42,15 @@ export class Tailscale {
     const origin = `https://${status.dnsName}${port === 443 ? '' : ':' + port}`;
     const before = this.config.value.publicOrigin;
     this.config.setOrigin(origin);
+    const host = `${status.dnsName}:${port}`;
+    const alreadyEnabled = this.config.value.funnelManaged && previous.TCP?.[String(port)]?.HTTPS === true
+      && previous.Web?.[host]?.Handlers?.['/']?.Proxy === `http://127.0.0.1:${this.config.value.publicPort}`
+      && previous.AllowFunnel?.[host] === true;
     try {
+      if (alreadyEnabled) {
+        this.config.save();
+        return { publicOrigin: origin, mcpUrl: `${origin}/mcp`, changedOrigin: before !== origin };
+      }
       const result = await runProcess(command, ['funnel', '--bg', `--https=${port}`, `http://127.0.0.1:${this.config.value.publicPort}`], { signal: context.signal, timeoutMs: 10 * 60 * 1000, onOutput: (stream, text) => context.emit(`tailscale.${stream}`, { text }) });
       assert(result.exitCode === 0, result.stderr || result.stdout || 'Funnel could not start. Follow the policy-approval link in the setup output.');
       this.config.value.funnelManaged = true; this.config.save();

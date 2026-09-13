@@ -4,7 +4,7 @@ import { Store, id, assert, safeError } from './util.mjs';
 
 export class Jobs extends EventEmitter {
   constructor(config) {
-    super(); this.config = config; this.work = new Map(); this.controllers = new Map(); this.extra = new Map(); this.saving = null; this.closing = false; this.closed = false;
+    super(); this.config = config; this.work = new Map(); this.approvals = new Map(); this.controllers = new Map(); this.extra = new Map(); this.saving = null; this.closing = false; this.closed = false;
     this.store = new Store(path.join(config.home, 'jobs.json'), { jobs: [] });
     for (const job of this.store.data.jobs) if (['queued', 'running', 'awaiting_approval'].includes(job.status)) { job.status = 'interrupted'; job.error = 'Bridge restarted. Review partial changes before resubmitting; jobs are never replayed automatically.'; }
     this.store.save();
@@ -15,11 +15,11 @@ export class Jobs extends EventEmitter {
     this.emit('change');
   }
   list(principal = null) {
-    return this.store.data.jobs.filter(j => !principal || (j.clientId === principal.clientId && j.scopes.every(s => principal.scopes.includes(s)))).map(({ events, ...j }) => ({ ...j, eventCount: events.length })).reverse();
+    return this.store.data.jobs.filter(j => !principal || (j.clientId === principal.clientId && (!j.grantId || j.grantId === principal.grantId) && j.scopes.every(s => principal.scopes.includes(s)))).map(({ events, ...j }) => ({ ...j, eventCount: events.length })).reverse();
   }
   get(jobId, principal = null) {
     const j = this.store.data.jobs.find(j => j.id === jobId); assert(j, 'Unknown job', 404);
-    assert(!principal || (j.clientId === principal.clientId && j.scopes.every(s => principal.scopes.includes(s))), 'Job is not accessible to this OAuth connection and scope', 403); return j;
+    assert(!principal || (j.clientId === principal.clientId && (!j.grantId || j.grantId === principal.grantId) && j.scopes.every(s => principal.scopes.includes(s))), 'Job is not accessible to this OAuth connection and scope', 403); return j;
   }
   view(jobId, principal = null, after = 0, limit = 100) {
     const j = this.get(jobId, principal), events = j.events.filter(e => e.seq > after).slice(0, Math.min(limit, 200));
@@ -58,15 +58,32 @@ export class Jobs extends EventEmitter {
     this.work.delete(jobId); const controller = new AbortController(); this.controllers.set(jobId, controller);
     j.status = 'running'; this.event(jobId, 'job.started', {});
     try {
-      const result = await runner({ jobId, signal: controller.signal, emit: (type, data) => this.event(jobId, type, data), setControl: control => this.extra.set(jobId, control) });
+      const result = await runner({ jobId, signal: controller.signal, emit: (type, data) => this.event(jobId, type, data), setControl: control => this.extra.set(jobId, control), requestApproval: request => this.requestApproval(jobId, request, controller.signal) });
       if (j.status !== 'cancelled') { j.status = 'completed'; j.result = result; }
     } catch (e) { if (j.status !== 'cancelled') { j.status = 'failed'; j.error = safeError(e); } }
     finally {
-      this.controllers.delete(jobId); this.extra.delete(jobId); this.event(jobId, 'job.finished', { status: j.status }); if (!this.closed) this.store.save();
+      controller.abort(); delete j.permissionRequest; this.controllers.delete(jobId); this.extra.delete(jobId); this.event(jobId, 'job.finished', { status: j.status }); if (!this.closed) this.store.save();
     }
+  }
+  requestApproval(jobId, request, signal) {
+    const j = this.get(jobId);
+    assert(j.status === 'running' && !signal.aborted && !this.approvals.has(jobId), 'Job cannot request approval');
+    j.permissionRequest = { source: request.source, message: request.message };
+    j.status = 'awaiting_approval'; this.event(jobId, 'job.permission_requested', j.permissionRequest); this.store.save();
+    return new Promise((resolve, reject) => {
+      const abort = () => finish(false, new Error('Permission request cancelled'));
+      const finish = (allow, error) => {
+        signal.removeEventListener('abort', abort); this.approvals.delete(jobId); delete j.permissionRequest;
+        if (j.status === 'awaiting_approval') j.status = 'running';
+        this.saveSoon(); if (error) reject(error); else resolve(allow);
+      };
+      this.approvals.set(jobId, finish); signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
   }
   approve(jobId, allow) {
     const j = this.get(jobId); assert(j.status === 'awaiting_approval', 'Job is not awaiting approval');
+    if (this.approvals.has(jobId)) { this.approvals.get(jobId)(allow); this.event(jobId, 'job.permission_answered', { allow }); this.store.save(); return this.view(jobId); }
     if (allow) { j.status = 'queued'; setImmediate(() => this.run(jobId)); }
     else { this.work.delete(jobId); j.status = 'denied'; this.event(jobId, 'job.denied', {}); }
     this.store.save(); return this.view(jobId);

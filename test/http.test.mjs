@@ -3,6 +3,9 @@ import http from 'node:http';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { NativeComputer } from '../src/native-computer.mjs';
+import { CodexComputer } from '../src/codex-computer.mjs';
+import { installNativeComputerTools } from '../src/native-computer-tools.mjs';
 import { createBridge } from '../src/server.mjs';
 import { id, challenge } from '../src/util.mjs';
 import { fixture, register, waitJob } from './helpers.mjs';
@@ -28,6 +31,53 @@ async function server(t) {
   return { ...f, b, remote, local, admin, auth, token, rpc, tool };
 }
 
+test('macOS exposes inspection but rejects removed structured input without executing it', async t => {
+  const { b, tool, admin, rpc } = await server(t);
+  const calls = [];
+  b.computer.native.stop();
+  b.computer.native = new CodexComputer(b.computer, { clientFactory: () => ({
+    initialize: async () => {}, close() {}, async call(name, args) {
+      calls.push({ name, args });
+      return name === 'list_apps' ? { content: [], structuredContent: { apps: [{ id: 'fixture.app', displayName: 'Fixture', isRunning: true }] } } : { content: [{ type: 'text', text: '24 button Test' }, { type: 'image', mimeType: 'image/png', data: 'fixture-image' }] };
+    }
+  }) });
+  installNativeComputerTools(b.tools);
+  await admin('/api/dangerous', { enabled: true });
+  const start = (await tool('computer_session_start', { windowId: 'fixture.app', idempotencyKey: 'relay-start' })).structuredContent;
+  const session = (await waitJob(b.jobs, start.id)).result;
+  const observation = await tool('computer_observe', { sessionId: session.sessionId });
+  assert.equal(observation.content[2].type, 'image');
+  assert.equal(observation.content[2].data, 'fixture-image');
+  const args = { sessionId: session.sessionId, observationId: observation.structuredContent.observationId, action: 'invoke', elementId: '24', idempotencyKey: 'relay-click' };
+  const names = (await rpc('tools/list')).body.result.tools.map(t => t.name);
+  assert.ok(!names.includes('computer_interact'));
+  if (process.platform === 'darwin') assert.ok(names.includes('computer_js'));
+  const jobsBefore = b.jobs.store.data.jobs.length;
+  const rejected = await tool('computer_interact', args);
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /Unknown tool/);
+  assert.equal(b.jobs.store.data.jobs.length, jobsBefore);
+  assert.equal(calls.filter(c => c.name === 'click').length, 0);
+  assert.equal(b.computer.legacyEnabled(), false);
+  const treeOnly = await tool('computer_observe', { sessionId: session.sessionId, includeImage: false });
+  assert.equal(treeOnly.structuredContent.tree, '24 button Test');
+  assert.ok(!treeOnly.content.some(c => c.type === 'image'));
+  assert.equal((await tool('computer_session_end', { sessionId: session.sessionId })).structuredContent.closed, true);
+});
+
+test('HTTP Computer Use REPL requires execution scope and returns native images inline', { skip: process.platform !== 'darwin' }, async t => {
+  const { b, tool, admin } = await server(t);
+  const calls=[];
+  b.computer.repl.clientFactory=()=>({closed:false,initialize:async()=>{},close(){this.closed=true},async replCall(name,args){calls.push({name,args});return {content:[{type:'text',text:args.code},{type:'image',mimeType:'image/png',data:'native-image'}],_meta:{native:true}};}});
+  await admin('/api/dangerous',{enabled:true});
+  const code='let app = await cua.getApp("Calculator");';
+  const result=await tool('computer_js',{code,idempotencyKey:'raw-once'});
+  assert.equal(result.content[0].text,code);assert.equal(result.content[1].data,'native-image');assert.equal(result._meta.native,true);
+  const limited=register(b.oauth,'bridge:read computer:use').tokens().access_token;
+  const denied=await tool('computer_js',{code},limited);assert.equal(denied.isError,true);assert.equal(calls.length,1);
+  await admin('/api/computer',{enabled:false});assert.equal(b.computer.repl.sessions.size,0);
+});
+
 test('HTTP OAuth discovery, DCR, browser pairing, consent, PKCE token and authenticated MCP', async t => {
   const { b, remote, rpc } = await server(t);
   const meta = await (await fetch(remote + '/.well-known/oauth-protected-resource/mcp')).json();
@@ -52,7 +102,7 @@ test('HTTP OAuth discovery, DCR, browser pairing, consent, PKCE token and authen
   assert.ok(token.refresh_token);
   const initialized = await rpc('initialize', { protocolVersion: '2025-11-25', clientInfo: { name: 'integration-test', version: '1' }, capabilities: {} }, token.access_token);
   assert.equal(initialized.body.result.serverInfo.name, 'codex-link');
-  const list = await rpc('tools/list', {}, token.access_token); assert.ok(list.body.result.tools.find(x => x.name === 'file_read')); assert.equal(list.body.result.tools.length, 24); assert.ok(list.body.result.tools.every(x => !x.name.startsWith('codex_')));
+  const list = await rpc('tools/list', {}, token.access_token); assert.ok(list.body.result.tools.find(x => x.name === 'file_read')); assert.equal(list.body.result.tools.length, process.platform === 'darwin' ? 26 : 24); assert.ok(list.body.result.tools.every(x => !x.name.startsWith('codex_')));
   const revoked = await fetch(remote + '/oauth/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: client.client_id, token: token.access_token }) });
   assert.equal(revoked.status, 200); assert.equal((await rpc('ping', {}, token.access_token)).response.status, 401);
 });
@@ -187,6 +237,22 @@ test('local owner can enable dangerous mode and persistent computer control', as
 });
 
 
+test('dangerous mode releases pending requests and overrides individual approval settings', async t => {
+  const { b, admin, tool } = await server(t);
+  const args = { workspace: 'project', path: 'pending-danger.txt', text: 'approved', expectedHash: null, idempotencyKey: 'pending-danger' };
+  const pending = (await tool('file_write', args)).structuredContent;
+  assert.equal(pending.status, 'awaiting_approval');
+  await admin('/api/dangerous', { enabled: true });
+  assert.equal((await waitJob(b.jobs, pending.id)).status, 'completed');
+  await admin('/api/settings', { autoApproveWrites: false, autoApproveShell: false });
+  const next = (await tool('file_write', { ...args, path: 'next-danger.txt', idempotencyKey: 'next-danger' })).structuredContent;
+  assert.notEqual(next.status, 'awaiting_approval');
+  assert.equal((await waitJob(b.jobs, next.id)).status, 'completed');
+  await admin('/api/dangerous', { enabled: false });
+  const gated = (await tool('file_write', { ...args, path: 'gated.txt', idempotencyKey: 'gated' })).structuredContent;
+  assert.equal(gated.status, 'awaiting_approval');
+});
+
 test('native computer owner routes require local authentication and cannot be used over MCP', async t => {
   const { remote, local, token, admin, b, tool } = await server(t);
   let invoked = false;
@@ -214,13 +280,22 @@ test('local native app policy invalidates live sessions without enabling desktop
   assert.equal((await admin('/api/computer/policy', { rules: [rule, rule] })).status, 400);
 });
 
-test('dangerous mode does not bypass native application approval or enable unscoped legacy tools', async t => {
+test('dangerous mode bypasses native application rules and enables legacy access until disabled', async t => {
   const { b, admin } = await server(t);
   assert.equal((await admin('/api/dangerous', { enabled: true })).status, 200);
+  b.computer.native = new NativeComputer(b.computer, { platform: 'win32', transport: async () => ({}) });
   const target = { appId: 'fixture.editor', appName: 'Fixture', executable: '/fixture/editor', windowId: '1', pid: 777, processStart: '1234', blocked: false };
   b.computer.native.invoke = async () => ({ protocol: 1, target });
   const prepared = await b.computer.native.prepareStart({ windowId: '1' }, { clientId: 'test', grantId: 'test' });
-  assert.equal(prepared.needsApproval, true); assert.equal(b.config.value.computerLegacyEnabled, false);
+  assert.equal(prepared.needsApproval, false);
+  b.computer.native.setRules([{ appId: target.appId, executable: target.executable, mode: 'foreground', decision: 'block' }]);
+  assert.equal((await b.computer.native.prepareStart({ windowId: '1', mode: 'foreground' }, { clientId: 'test', grantId: 'test' })).needsApproval, false);
+  assert.equal(b.computer.legacyEnabled(), true);
+  assert.equal(b.computer.native.manifest().legacyEnabled, true);
+  assert.equal(b.config.value.computerLegacyEnabled, false);
+  await admin('/api/dangerous', { enabled: false });
+  assert.equal(b.computer.native.decision(target, 'foreground'), 'block');
+  assert.equal(b.computer.legacyEnabled(), false);
   await assert.rejects(b.computer.action({ action: 'screenshot' }), /legacy desktop control is disabled/);
 });
 
@@ -246,4 +321,49 @@ test('macOS OS permission prompts are owner-initiated only and never run during 
   assert.equal((await admin('/api/computer/permissions', {})).status, 200);
   assert.deepEqual(calls, ['request_permissions']); // Stubbed: no OS prompt is displayed by this test.
   assert.equal(b.computer.enabled(), false);
+});
+
+test('owner updates are authenticated, scoped, cancellable and returned once on tool responses', async t => {
+  const { b, admin, local, rpc, tool } = await server(t);
+  const grantId = b.oauth.connections()[0].id;
+  const post = text => admin('/api/updates', { grantId, text });
+  assert.equal((await fetch(local + '/api/updates', { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await post(' ')).status, 400);
+  assert.equal((await post('x'.repeat(4001))).status, 400);
+  assert.equal((await admin('/api/updates', { grantId: 'missing', text: 'private' })).status, 400);
+  const cancelled = await (await post('cancel me')).json();
+  assert.equal((await admin('/api/updates/cancel', { id: cancelled.id })).status, 200);
+  await post('focus on login');
+  await rpc('ping'); await rpc('tools/list');
+  const otherToken = register(b.oauth).tokens().access_token;
+  assert.ok(!(await tool('bridge_status', {}, otherToken)).content.some(c => c.text?.includes('focus on login')));
+  const result = await tool('bridge_status');
+  assert.match(result.content.at(-1).text, /focus on login/);
+  assert.doesNotMatch(result.content.at(-1).text, /cancel me/);
+  assert.ok(!(await tool('bridge_status')).content.some(c => c.text?.includes('focus on login')));
+  await post('recover from this error');
+  const error = await tool('missing_tool');
+  assert.equal(error.isError, true); assert.match(error.content.at(-1).text, /recover from this error/);
+  await post('wait until resumed');
+  await admin('/api/settings', { remotePaused: true });
+  assert.equal((await rpc('tools/call', { name: 'bridge_status' })).response.status, 503);
+  await admin('/api/settings', { remotePaused: false });
+  assert.match((await tool('bridge_status')).content.at(-1).text, /wait until resumed/);
+  const state = await (await admin('/api/state')).json();
+  assert.equal(state.updates.filter(u => u.status === 'returned').length, 3);
+  assert.equal(state.updates.filter(u => u.status === 'cancelled').length, 1);
+});
+
+test('dangerous mode cannot accept an upstream runtime consent request', async t => {
+  const { b, admin, remote, token } = await server(t);
+  const j = b.jobs.create({ kind: 'computer', title: 'Runtime consent', principal: { clientId: 'local-owner' }, approval: false }, c => c.requestApproval({ source: 'Codex Computer Use', message: 'Allow Discord?' }));
+  await new Promise(r => setImmediate(r));
+  assert.equal(b.jobs.get(j.id).status, 'awaiting_approval');
+  await admin('/api/dangerous', { enabled: true });
+  assert.equal(b.jobs.get(j.id).status, 'awaiting_approval');
+  const denied = await fetch(remote + '/api/approve', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ jobId: j.id, allow: true }) });
+  assert.equal(denied.status, 404);
+  assert.equal(b.jobs.get(j.id).status, 'awaiting_approval');
+  await admin('/api/approve', { jobId: j.id, allow: false });
+  assert.equal((await waitJob(b.jobs, j.id)).result, false);
 });

@@ -7,7 +7,8 @@ import CryptoKit
 import Carbon
 
 // One bounded request per process. No listener, shell evaluation, permission changes,
-// clipboard access or private event-injection APIs. Permission prompts are owner-only.
+// clipboard access. Permission prompts are owner-only. Background pointer routing
+// uses one runtime-checked, undocumented coordinate setter (see WindowPointer).
 struct ComputerError: Error {
     let code: String
     let message: String
@@ -48,6 +49,9 @@ func rectFrom(_ value: [String: Any]) throws -> CGRect {
 }
 func closeRect(_ a: CGRect, _ b: CGRect) -> Bool {
     abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 && abs(a.width - b.width) < 1 && abs(a.height - b.height) < 1
+}
+func windowPoint(_ point: CGPoint, in bounds: CGRect) -> CGPoint {
+    CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY)
 }
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
@@ -96,6 +100,128 @@ func descriptor(_ element: AXUIElement) -> [String: Any] {
         else if let v = raw as? NSNumber { value["value"] = v }
     }
     return value
+}
+
+// Layout-only Electron groups can nest dozens of levels before a control. Keep
+// their real child paths for stale-element validation, but not in the public tree.
+func layoutOnly(_ node: [String: Any]) -> Bool {
+    node["role"] as? String == "AXGroup" && ["", "AXApplicationGroup"].contains(node["subrole"] as? String ?? "") &&
+        node["name"] as? String == "" && node["automationId"] as? String == "" &&
+        ((node["value"] as? String) ?? "").isEmpty && node["protected"] as? Bool != true &&
+        node["enabled"] as? Bool != false &&
+        !(node["actions"] as? [String] ?? []).contains(kAXPressAction)
+}
+
+// The chain must first be verified to end at the approved window. Validate the
+// whole ancestry before choosing an action, including protected/disabled parents.
+func pressIndex(_ chain: [[String: Any]], at point: CGPoint) throws -> Int {
+    try require(!chain.contains { $0["protected"] as? Bool == true || $0["enabled"] as? Bool == false },
+                "protected_element", "The clicked control or its parent is protected or disabled.")
+    for (index, node) in chain.enumerated() {
+        if (node["actions"] as? [String] ?? []).contains(kAXPressAction),
+           let data = node["bounds"] as? [String: Any], let rect = try? rectFrom(data), rect.contains(point) { return index }
+    }
+    throw ComputerError(code: "unsupported_action", message: "This point has no accessible press action. Observe again and use a supported element action or an approved foreground session.")
+}
+
+// Some AppKit hit tests return a containing view (Music's mini player, for
+// example). Descend only that verified view, rejecting overlapping targets.
+func descendantPress<Node>(_ root: Node, at point: CGPoint,
+                           inspect: (Node) throws -> [String: Any], children: (Node) -> [Node]) throws -> Node? {
+    var visited = 0
+    let deadline = Date().addingTimeInterval(3)
+    func visit(_ node: Node, depth: Int) throws -> Node? {
+        visited += 1
+        try require(visited <= 500 && depth <= 64 && Date() < deadline, "hit_test_failed", "Control hit test exceeded its bounds.")
+        let data = try inspect(node)
+        let bounds = (data["bounds"] as? [String: Any]).flatMap { try? rectFrom($0) }
+        if let bounds, !bounds.contains(point) { return nil }
+        try require(data["protected"] as? Bool != true && data["enabled"] as? Bool != false,
+                    "protected_element", "The clicked control or its parent is protected or disabled.")
+        var candidate: Node?
+        for child in children(node) {
+            if let found = try visit(child, depth: depth + 1) {
+                try require(candidate == nil, "ambiguous_element", "Multiple overlapping controls match this point. Use an element ID.")
+                candidate = found
+            }
+        }
+        if let candidate { return candidate }
+        return bounds?.contains(point) == true && (data["actions"] as? [String] ?? []).contains(kAXPressAction) ? node : nil
+    }
+    return try visit(root, depth: 0)
+}
+
+@MainActor
+final class PointerProbeView: NSView {
+    var received: CGPoint?
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { received = convert(event.locationInWindow, from: nil) }
+}
+
+// postToPid alone loses both the window association and window-local position.
+// Fields 51/52 carry the AppKit window routing (51 is also emitted by
+// NSEvent.mouseEvent); 91/92 alone do not route AppKit events. These fields and the local
+// coordinate setter are not a stable API contract. Verify actual delivery to our own
+// offscreen window before sending any pointer event to the approved application.
+@MainActor
+final class WindowPointer {
+    typealias SetLocation = @convention(c) (CGEvent, CGPoint) -> Void
+    let setLocation: SetLocation
+    init() throws {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGEventSetWindowLocation") else {
+            throw ComputerError(code: "background_pointer_unavailable", message: "This macOS version lacks background window coordinates. Use an accessible element or an approved foreground session.")
+        }
+        setLocation = unsafeBitCast(symbol, to: SetLocation.self)
+        try probe()
+    }
+    func route(_ event: CGEvent, pid: Int32, window: Int64, bounds: CGRect) {
+        event.flags = []
+        event.setIntegerValueField(CGEventField(rawValue: 51)!, value: window)
+        event.setIntegerValueField(CGEventField(rawValue: 52)!, value: window)
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: window)
+        event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: window)
+        setLocation(event, windowPoint(event.location, in: bounds))
+        event.postToPid(pid)
+    }
+    private func probe() throws {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        app.finishLaunching()
+        let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 160, height: 120),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let view = PointerProbeView(frame: CGRect(x: 0, y: 0, width: 160, height: 120))
+        window.contentView = view
+        window.orderBack(nil)
+        window.displayIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        defer { window.close() }
+        let id = window.windowNumber
+        guard let data = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(id)) as? [[String: Any]])?.first,
+              let rectData = data[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: rectData) else {
+            throw ComputerError(code: "background_pointer_unavailable", message: "Cannot check background pointer delivery on this macOS version.")
+        }
+        let expected = CGPoint(x: 43, y: 71)
+        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let cursor = CGEvent(source: nil)?.location
+        for type: CGEventType in [.leftMouseDown, .leftMouseUp] {
+            guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                                      mouseCursorPosition: CGPoint(x: bounds.minX + expected.x, y: bounds.minY + expected.y), mouseButton: .left) else {
+                throw ComputerError(code: "input_failed", message: "Cannot create a pointer test event.")
+            }
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            route(event, pid: getpid(), window: Int64(id), bounds: bounds)
+        }
+        let deadline = Date().addingTimeInterval(0.75)
+        while view.received == nil && Date() < deadline {
+            if let event = app.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) { app.sendEvent(event) }
+        }
+        try require(view.received.map { hypot($0.x - expected.x, $0.y - expected.y) < 1 } == true &&
+                    foreground == NSWorkspace.shared.frontmostApplication?.processIdentifier && cursor == CGEvent(source: nil)?.location,
+                    "background_pointer_unavailable", "Background pointer delivery failed its coordinate/focus check. No input was sent to the target app.")
+    }
 }
 
 @MainActor
@@ -179,32 +305,63 @@ final class MacComputer {
         // Public Accessibility has no universal CGWindowID mapping. Never guess between equal rectangles.
         try require(matches.count == 1, "ambiguous_accessibility_window", "Cannot uniquely match the native window to an accessibility window.")
         _ = AXUIElementSetMessagingTimeout(matches[0], 0.5)
+        // Electron's documented switch is debounced for two seconds on modern
+        // macOS. Exiting after a short sleep can cancel activation entirely.
+        // Avoid resetting its timer when this window already exposes web content.
+        if !hasWebContent(matches[0]), (attribute(app, "AXManualAccessibility") as? Bool) != nil,
+           AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success {
+            let deadline = Date().addingTimeInterval(3)
+            // A partial native tree can appear before the complete mode's timer
+            // fires. Do not return early and race the first control action.
+            usleep(2100000)
+            while Date() < deadline && !hasWebContent(matches[0]) { usleep(100000) }
+        }
         return matches[0]
+    }
+    func hasWebContent(_ root: AXUIElement) -> Bool {
+        var pending = [root], visited = 0
+        while !pending.isEmpty && visited < 64 {
+            let element = pending.removeFirst(); visited += 1
+            let descendants = children(element)
+            if axString(element, kAXRoleAttribute) == "AXWebArea" && !descendants.isEmpty { return true }
+            pending.append(contentsOf: descendants.prefix(max(0, 64 - visited - pending.count)))
+        }
+        return false
     }
     func tree(_ root: AXUIElement, maxNodes: Int, maxDepth: Int) -> ([[String: Any]], Bool) {
         var output: [[String: Any]] = []
         var seen = Set<CFHashCode>()
         var truncated = false
-        let deadline = Date().addingTimeInterval(3)
-        func visit(_ element: AXUIElement, _ path: [Int]) {
+        let deadline = Date().addingTimeInterval(5)
+        let viewport = axRect(root)
+        func visit(_ element: AXUIElement, _ path: [Int], _ depth: Int) {
             if output.count >= maxNodes || Date() > deadline { truncated = true; return }
             if seen.contains(CFHash(element)) { return }
             seen.insert(CFHash(element))
             var node = descriptor(element)
-            node["id"] = "e\(output.count)"; node["path"] = path
-            output.append(node)
+            let layout = !path.isEmpty && layoutOnly(node)
+            // Chromium clips scrolled-out rows to zero-area bounds. Excluding
+            // those subtrees prevents a long sidebar from exhausting maxNodes.
+            // Empty layout wrappers may still contain absolutely positioned UI.
+            if !path.isEmpty, let bounds = axRect(element), let viewport,
+               (!layout && bounds.isEmpty) || (!bounds.isEmpty && !bounds.intersects(viewport)) { return }
+            if !layout {
+                node["id"] = "e\(output.count)"; node["path"] = path
+                output.append(node)
+            }
             if protectedElement(element) { return }
-            if path.count >= maxDepth { if !children(element).isEmpty { truncated = true }; return }
+            let nextDepth = depth + (layout ? 0 : 1)
+            if path.count >= 64 || nextDepth > maxDepth { if !children(element).isEmpty { truncated = true }; return }
             for (i, child) in children(element).enumerated() {
                 if output.count >= maxNodes || Date() > deadline { truncated = true; break }
-                visit(child, path + [i])
+                visit(child, path + [i], nextDepth)
             }
         }
-        visit(root, [])
+        visit(root, [], 0)
         return (output, truncated)
     }
     func resolve(_ root: AXUIElement, _ reference: [String: Any]) throws -> AXUIElement {
-        guard let path = reference["path"] as? [Int], path.count <= 12 else { throw ComputerError(code: "invalid_element", message: "Invalid element path.") }
+        guard let path = reference["path"] as? [Int], path.count <= 64 else { throw ComputerError(code: "invalid_element", message: "Invalid element path.") }
         var element = root
         for index in path {
             try require(!protectedElement(element), "protected_element", "Protected content is not an automation target.")
@@ -216,6 +373,46 @@ final class MacComputer {
         try require((current["fingerprint"] as? String) == (reference["fingerprint"] as? String), "stale_element", "Accessibility element changed; observe again.")
         try require(!protectedElement(element) && (current["enabled"] as? Bool) != false, "protected_element", "Element is protected or disabled.")
         return element
+    }
+    func hitChain(_ point: CGPoint, root: AXUIElement, pid: Int32) throws -> [AXUIElement] {
+        // Application-scoped hit testing works even when another app covers the
+        // window. System-wide hit testing would pick that foreground app instead.
+        var hit: AXUIElement?
+        try require(AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(pid), Float(point.x), Float(point.y), &hit) == .success && hit != nil,
+                    "hit_test_failed", "The approved app could not identify a control at this point.")
+        var chain: [AXUIElement] = [], cursor = hit
+        while let element = cursor, chain.count < 64 {
+            var owner: pid_t = 0
+            try require(AXUIElementGetPid(element, &owner) == .success && owner == pid,
+                        "off_target_element", "The clicked control belongs to another application.")
+            chain.append(element)
+            if CFEqual(element, root) { break }
+            cursor = axElement(attribute(element, kAXParentAttribute))
+        }
+        try require(chain.last.map { CFEqual($0, root) } == true,
+                    "off_target_element", "Cannot verify that the clicked control belongs to the approved window.")
+        let ancestry = chain.map(descriptor)
+        try require(!ancestry.contains { $0["protected"] as? Bool == true || $0["enabled"] as? Bool == false },
+                    "protected_element", "The clicked control or its parent is protected or disabled.")
+        return chain
+    }
+    func pressAt(_ point: CGPoint, root: AXUIElement, pid: Int32) throws -> Bool {
+        let chain = try hitChain(point, root: root, pid: pid)
+        let ancestry = chain.map(descriptor)
+        let descendant = try descendantPress(chain[0], at: point, inspect: { element in
+            var owner: pid_t = 0
+            try require(AXUIElementGetPid(element, &owner) == .success && owner == pid, "off_target_element", "Control belongs to another application.")
+            return descriptor(element)
+        }, children: children)
+        let element: AXUIElement
+        if let descendant { element = descendant }
+        else {
+            do { element = chain[try pressIndex(ancestry, at: point)] }
+            catch let error as ComputerError where error.code == "unsupported_action" { return false }
+        }
+        try require(AXUIElementPerformAction(element, kAXPressAction as CFString) == .success,
+                    "unsupported_action", "The application rejected this control's press action. No mouse-event fallback was attempted.")
+        return true
     }
     func capture(_ target: [String: Any], side: Int) async throws -> ([String: Any], Data) {
         try require(CGPreflightScreenCaptureAccess(), "screen_capture_permission", "Grant Screen Recording permission to the native helper in macOS System Settings.")
@@ -271,6 +468,9 @@ final class MacComputer {
         if let field = axElement(attribute(app, kAXFocusedUIElementAttribute)) {
             try require(!protectedElement(field), "protected_element", "Typing into protected fields is not supported.")
         }
+        try checkHumanInput()
+    }
+    func checkHumanInput() throws {
         for key: CGKeyCode in [54, 55, 56, 58, 59, 60, 61, 62] {
             try require(!CGEventSource.keyState(.hidSystemState, key: key), "human_input", "A keyboard modifier is held. Input has not been sent.")
         }
@@ -293,7 +493,9 @@ final class MacComputer {
         try require(closeRect(bounds, try rectFrom(frame)), "stale_frame", "Window moved or resized; observe again.")
         let root = try self.root(target), pid = Int32(target["pid"] as! Int)
         let oldForeground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        var inputMethod = "quartz"
         if let reference = request["element"] as? [String: Any] {
+            inputMethod = "accessibility"
             let element = try resolve(root, reference)
             let status: AXError
             switch action {
@@ -310,10 +512,19 @@ final class MacComputer {
             }
             try require(status == .success, "unsupported_action", "Application rejected the accessibility action (\(status.rawValue)). No pixel fallback was attempted.")
         } else if action == "focus" {
+            inputMethod = "accessibility"
             try require(mode == "foreground", "foreground_required", "Focus requires foreground approval.")
             guard let app = NSRunningApplication(processIdentifier: pid) else { throw ComputerError(code: "window_missing", message: "Application exited.") }
             try require(app.activate(options: []), "focus_failed", "The application could not be activated.")
             try require(AXUIElementPerformAction(root, kAXRaiseAction as CFString) == .success, "focus_failed", "The window could not be raised.")
+            // Activation is asynchronous, and NSWorkspace caches its foreground
+            // application until the run loop processes the notification.
+            let deadline = Date().addingTimeInterval(2)
+            repeat {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                try checkSession(); try cornerFailsafe()
+            } while !app.isActive && Date() < deadline
+            try checkFocus(target, root, mode)
         } else if action == "key" || action == "type" {
             try checkFocus(target, root, mode)
             if action == "type" {
@@ -339,7 +550,13 @@ final class MacComputer {
             }
         } else {
             let location = try point("x", "y", bounds)
-            try checkFocus(target, root, mode)
+            let buttonName = request["button"] as? String ?? "left"
+            try require(["left", "right", "middle"].contains(buttonName), "invalid_button", "Invalid mouse button.")
+            let accessibleClick = mode == "background" && action == "click" && buttonName == "left"
+            // Window-routed pointer input does not require keyboard focus. A
+            // newly opened inactive window may have no app-focused window.
+            if mode == "background" { try checkHumanInput(); _ = try hitChain(location, root: root, pid: pid) }
+            else { try checkFocus(target, root, mode) }
             if mode == "foreground" {
                 try checkFocus(target, root, mode)
                 var hit: AXUIElement?
@@ -349,37 +566,73 @@ final class MacComputer {
                     try require(!protectedElement(hit), "protected_element", "Protected fields are not input targets.")
                 } else { throw ComputerError(code: "hit_test_failed", message: "Cannot verify the app at this point.") }
             }
-            let buttonName = request["button"] as? String ?? "left"
-            try require(["left", "right", "middle"].contains(buttonName), "invalid_button", "Invalid mouse button.")
-            let button: CGMouseButton = buttonName == "right" ? .right : buttonName == "middle" ? .center : .left
-            let down: CGEventType = button == .right ? .rightMouseDown : button == .center ? .otherMouseDown : .leftMouseDown
-            let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
-            let dragged: CGEventType = button == .right ? .rightMouseDragged : button == .center ? .otherMouseDragged : .leftMouseDragged
-            func mouse(_ type: CGEventType, _ at: CGPoint, _ count: Int64 = 1) throws {
-                guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: button) else { throw ComputerError(code: "input_failed", message: "Cannot create mouse event.") }
-                event.setIntegerValueField(.mouseEventClickState, value: count)
-                post(event, pid, mode)
+            var pointer: WindowPointer?
+            var pressed = false
+            func recheckPointerTarget() throws {
+                try checkSession(); try cornerFailsafe(); try checkHumanInput()
+                let current = try verify(target)
+                try require(closeRect(bounds, try rectFrom(current["bounds"] as! [String: Any])),
+                            "stale_frame", "Window moved or resized during input preparation; observe again.")
             }
-            switch action {
-            case "move": try mouse(.mouseMoved, location)
-            case "click", "double_click":
-                for count in 1...(action == "double_click" ? 2 : 1) { try mouse(down, location, Int64(count)); try mouse(up, location, Int64(count)) }
-            case "drag":
-                try require(mode == "foreground", "foreground_required", "Dragging requires foreground approval.")
-                let destination = try point("toX", "toY", bounds)
-                try mouse(down, location)
-                defer { try? mouse(up, destination) }
-                for step in 1...12 { let f = Double(step) / 12; try mouse(dragged, CGPoint(x: location.x + (destination.x - location.x) * f, y: location.y + (destination.y - location.y) * f)) }
-            case "scroll":
-                let amount = try boundedInt(request, "amount", 0, -30, 30)
-                let horizontal = request["horizontal"] as? Bool ?? false
-                guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: horizontal ? 0 : Int32(amount), wheel2: horizontal ? Int32(amount) : 0, wheel3: 0) else { throw ComputerError(code: "input_failed", message: "Cannot create scroll event.") }
-                event.location = location; post(event, pid, mode)
-            default: throw ComputerError(code: "unsupported_action", message: "Unsupported action.")
+            if accessibleClick {
+                try recheckPointerTarget()
+                // A successful self-probe does not prove another application
+                // accepts inactive-window mouse events. In particular Chromium
+                // drops plain background clicks. Use its actual control action
+                // before attempting raw events, and never replay a press.
+                pressed = try pressAt(location, root: root, pid: pid)
+            }
+            if mode == "background" && !pressed {
+                let app = AXUIElementCreateApplication(pid)
+                try require(NSRunningApplication(processIdentifier: pid)?.isActive == true ||
+                            attribute(app, "AXManualAccessibility") == nil,
+                            "foreground_required", "This inactive app does not reliably accept unmodified pointer events. Use an accessible control, or start a foreground session, focus the window, and observe again. No input was sent.")
+                pointer = try WindowPointer()
+            }
+            if pressed {
+                inputMethod = "accessibility"
+            } else {
+                try recheckPointerTarget()
+                if pointer != nil { inputMethod = "window-quartz" }
+                let windowID = Int64(try string(target, "windowId"))!
+                func sendPointer(_ event: CGEvent) {
+                    if let pointer { pointer.route(event, pid: pid, window: windowID, bounds: bounds) }
+                    else { post(event, pid, mode) }
+                }
+                let button: CGMouseButton = buttonName == "right" ? .right : buttonName == "middle" ? .center : .left
+                let down: CGEventType = button == .right ? .rightMouseDown : button == .center ? .otherMouseDown : .leftMouseDown
+                let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
+                let dragged: CGEventType = button == .right ? .rightMouseDragged : button == .center ? .otherMouseDragged : .leftMouseDragged
+                func mouse(_ type: CGEventType, _ at: CGPoint, _ count: Int64 = 1) throws {
+                    guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: button) else { throw ComputerError(code: "input_failed", message: "Cannot create mouse event.") }
+                    event.setIntegerValueField(.mouseEventClickState, value: count)
+                    sendPointer(event)
+                    usleep(10000)
+                }
+                switch action {
+                case "move": try mouse(.mouseMoved, location)
+                case "click", "double_click":
+                    for count in 1...(action == "double_click" ? 2 : 1) { try mouse(down, location, Int64(count)); try mouse(up, location, Int64(count)) }
+                case "drag":
+                    let destination = try point("toX", "toY", bounds)
+                    if mode == "background" { _ = try hitChain(destination, root: root, pid: pid) }
+                    try mouse(down, location)
+                    defer { try? mouse(up, destination) }
+                    for step in 1...12 { let f = Double(step) / 12; try mouse(dragged, CGPoint(x: location.x + (destination.x - location.x) * f, y: location.y + (destination.y - location.y) * f)) }
+                case "scroll":
+                    let amount = try boundedInt(request, "amount", 0, -30, 30)
+                    let horizontal = request["horizontal"] as? Bool ?? false
+                    guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: horizontal ? 0 : Int32(amount), wheel2: horizontal ? Int32(amount) : 0, wheel3: 0) else { throw ComputerError(code: "input_failed", message: "Cannot create scroll event.") }
+                    event.location = location; sendPointer(event)
+                default: throw ComputerError(code: "unsupported_action", message: "Unsupported action.")
+                }
             }
         }
-        usleep(100000) // Allow the app to process input before checking for focus changes.
+        // Sleeping leaves NSWorkspace's activation cache stale. Process its
+        // notifications before reporting focus changes to the session owner.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         return ["protocol": 1, "ok": true, "action": action, "delivery": mode,
+            "inputMethod": inputMethod,
             "foregroundChanged": oldForeground != NSWorkspace.shared.frontmostApplication?.processIdentifier,
             "verificationRequired": true]
     }
@@ -398,7 +651,7 @@ final class MacComputer {
             return ["protocol": 1, "platform": "darwin", "backend": "ScreenCaptureKit/Accessibility/Quartz",
                 "permissions": ["screenCapture": CGPreflightScreenCaptureAccess(), "accessibility": AXIsProcessTrusted(), "sessionAvailable": availableSession()],
                 "capabilities": ["windowCapture": true, "accessibilityTree": true, "semanticActions": true, "unicodeInput": true,
-                    "backgroundPixelInput": "app-dependent CGEvent.postToPid; not an independent system cursor", "foregroundInput": true,
+                    "backgroundPixelInput": "left clicks prefer AXPress; raw window-routed pointer input is app-dependent; inactive Chromium apps require foreground mode for raw pointer events; verify results in each app", "foregroundInput": true,
                     "lockedUse": false, "clipboardModified": false, "multipleDisplays": true],
                 "minimumOS": "macOS 14"]
         }
@@ -457,6 +710,41 @@ struct Entry {
                 _ = try keyChord(["command", "shift", "a"])
                 do { _ = try keyChord(["a", "b"]); throw ComputerError(code: "self_test", message: "Bad chord accepted") }
                 catch let error as ComputerError { if error.code == "self_test" { throw error } }
+                let textNode: [String: Any] = ["actions": [], "protected": false, "enabled": true]
+                let linkNode: [String: Any] = ["actions": [kAXPressAction], "protected": false, "enabled": true,
+                    "bounds": rectJSON(CGRect(x: -500, y: 100, width: 100, height: 40))]
+                let clickPoint = CGPoint(x: -450, y: 120)
+                try require(windowPoint(clickPoint, in: CGRect(x: -500, y: 100, width: 100, height: 40)) == CGPoint(x: 50, y: 20),
+                            "self_test", "Window-local pointer coordinates failed with a negative display origin")
+                let chosen = try pressIndex([textNode, linkNode, textNode], at: clickPoint)
+                try require(chosen == 1, "self_test", "Click did not resolve text to its enclosing link")
+                for (chain, point, expectedCode) in [
+                    ([linkNode, ["protected": true]], clickPoint, "protected_element"),
+                    ([linkNode, ["enabled": false]], clickPoint, "protected_element"),
+                    ([textNode], clickPoint, "unsupported_action"),
+                    ([linkNode], CGPoint(x: 50, y: 50), "unsupported_action")
+                ] {
+                    do { _ = try pressIndex(chain, at: point); throw ComputerError(code: "self_test", message: "Unsafe/unsupported click accepted") }
+                    catch let error as ComputerError { try require(error.code == expectedCode, "self_test", "Wrong click rejection") }
+                }
+                let descendants: [[String: Any]] = [textNode, textNode, linkNode, linkNode]
+                func findPress(_ edges: [Int: [Int]], _ nodes: [[String: Any]] = descendants) throws -> Int? {
+                    try descendantPress(0, at: clickPoint, inspect: { nodes[$0] }, children: { edges[$0] ?? [] })
+                }
+                try require(try findPress([0: [1], 1: [2]]) == 2, "self_test", "Container hit did not resolve its nested button")
+                try require(try findPress([0: [1]]) == nil, "self_test", "A layout-only hit incorrectly became pressable")
+                for (edges, nodes, expectedCode) in [
+                    ([0: [2, 3]], descendants, "ambiguous_element"),
+                    ([0: [1], 1: [2]], [textNode, ["protected": true], linkNode, linkNode], "protected_element")
+                ] {
+                    do { _ = try findPress(edges, nodes); throw ComputerError(code: "self_test", message: "Unsafe descendant click accepted") }
+                    catch let error as ComputerError { try require(error.code == expectedCode, "self_test", "Wrong descendant click rejection") }
+                }
+                let group: [String: Any] = ["role": "AXGroup", "subrole": "", "name": "", "automationId": "", "actions": ["AXShowMenu", "AXScrollToVisible"]]
+                try require(layoutOnly(group) && !layoutOnly(group.merging(["actions": [kAXPressAction]]) { _, new in new }) &&
+                            !layoutOnly(group.merging(["protected": true]) { _, new in new }), "self_test", "Interactive/protected group omitted")
+                try require(layoutOnly(group.merging(["subrole": "AXApplicationGroup"]) { _, new in new }) &&
+                            !layoutOnly(group.merging(["subrole": "AXLandmarkNavigation"]) { _, new in new }), "self_test", "Layout and landmark groups confused")
                 FileHandle.standardOutput.write(try json(["protocol": 1, "ok": true, "selfTest": true])); return
             }
             try require(CommandLine.arguments.count == 1, "invalid_request", "No command-line arguments are accepted.")

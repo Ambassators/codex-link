@@ -46,6 +46,8 @@
       }
     ],
     "mac": {
+      "identity": "-",
+      "sign": "./sign-mac.cjs",
       "target": [
         "dmg",
         "zip"
@@ -63,6 +65,7 @@
       "allowToChangeInstallationDirectory": true
     },
     "beforePack": "./native-before-pack.cjs",
-    "afterPack": "./native-after-pack.cjs"
+    "afterPack": "./native-after-pack.cjs",
+    "afterSign": "./verify-mac-signature.cjs"
   }
 }

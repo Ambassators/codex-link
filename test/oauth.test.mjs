@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OAuth } from '../src/oauth.mjs';
-import { hash, id, challenge } from '../src/util.mjs';
+import { hash, id, challenge, now } from '../src/util.mjs';
 import { fixture, register } from './helpers.mjs';
 
 test('OAuth discovery uses canonical issuer and resource, S256 and DCR', t => {
@@ -50,6 +50,48 @@ test('opaque grants persist across restart, while owner browser sessions do not'
   const restarted = new OAuth(config); assert.ok(restarted.verify(`Bearer ${token.access_token}`));
   assert.equal(restarted.owner({ headers: { cookie: `__Secure-codex_link_owner=${r.ownerCookie}` } }), null);
   restarted.revokeAll(); assert.throws(() => restarted.verify(`Bearer ${token.access_token}`), /Invalid or expired/);
+});
+test('access and refresh tokens have no time limit, survive cleanup and restart, and remain revocable', t => {
+  const { config } = fixture(t), oauth = new OAuth(config), r = register(oauth), first = r.tokens();
+  assert.equal(Object.hasOwn(first, 'expires_in'), false);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 100 * 365 * 86400000 });
+  const restarted = new OAuth(config); restarted.cleanup();
+  assert.equal(restarted.verify(`Bearer ${first.access_token}`).clientId, r.client.client_id);
+  assert.equal(restarted.connections()[0].expires, null);
+  const second = restarted.token({ grant_type: 'refresh_token', client_id: r.client.client_id, resource: restarted.resource, refresh_token: first.refresh_token });
+  assert.equal(Object.hasOwn(second, 'expires_in'), false);
+  assert.ok(restarted.verify(`Bearer ${second.access_token}`));
+  restarted.revoke({ client_id: r.client.client_id, token: second.refresh_token });
+  assert.throws(() => restarted.verify(`Bearer ${first.access_token}`), /Invalid or expired/);
+  assert.throws(() => restarted.verify(`Bearer ${second.access_token}`), /Invalid or expired/);
+  assert.throws(() => restarted.token({ grant_type: 'refresh_token', client_id: r.client.client_id, resource: restarted.resource, refresh_token: second.refresh_token }), /Invalid refresh token/);
+});
+test('legacy migration preserves active connections without reviving revoked, expired, or differently bound grants', t => {
+  const { config } = fixture(t), oauth = new OAuth(config), rows = [];
+  for (const state of ['active', 'revoked', 'expired', 'other-issuer', 'other-resource']) {
+    const r = register(oauth), token = r.tokens(), access = oauth.store.data.tokens[hash(token.access_token)];
+    const grant = oauth.store.data.grants[access.grant];
+    rows.push({ r, token, grant, access, state });
+  }
+  for (const { access, grant, token, state } of rows) {
+    access.exp = now() - 3600;
+    grant.exp = state === 'expired' ? now() - 1 : now() + 86400;
+    grant.revoked = state === 'revoked';
+    if (state === 'other-issuer') grant.issuer = 'https://other.example';
+    if (state === 'other-resource') grant.resource += '/other';
+    oauth.store.data.refresh[hash(token.refresh_token)].exp = grant.exp;
+  }
+  const used = id();
+  oauth.store.data.refresh[hash(used)] = { grant: rows[0].grant.id, exp: now() + 86400, used: true };
+  delete oauth.store.data.permanentTokensVersion; oauth.store.save();
+  const restarted = new OAuth(config); restarted.cleanup();
+  assert.ok(restarted.verify(`Bearer ${rows[0].token.access_token}`));
+  for (const row of rows.slice(1)) assert.throws(() => restarted.verify(`Bearer ${row.token.access_token}`), /Invalid or expired/);
+  const active = rows[0];
+  assert.ok(restarted.token({ grant_type: 'refresh_token', client_id: active.r.client.client_id, resource: restarted.resource, refresh_token: active.token.refresh_token }).access_token);
+  assert.throws(() => restarted.token({ grant_type: 'refresh_token', client_id: active.r.client.client_id, resource: restarted.resource, refresh_token: used }), /reuse/);
+  const again = new OAuth(config);
+  assert.throws(() => again.verify(`Bearer ${active.token.access_token}`), /Invalid or expired/);
 });
 test('confidential DCR clients require the registered authentication method', t => {
   const { config } = fixture(t), oauth = new OAuth(config);

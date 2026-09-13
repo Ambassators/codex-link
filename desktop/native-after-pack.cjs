@@ -2,6 +2,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { target } = require('./native-helper.cjs');
 exports.default = async context => {
+  // macOS uses the user's installed Codex runtime; never bundle or re-sign it.
+  if (context.electronPlatformName === 'darwin') return;
   const native = target(context);
   const resources = native.platform === 'darwin'
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')

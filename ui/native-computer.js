@@ -1,5 +1,6 @@
 // Owner-only controls. No app rules or desktop permissions are changed on load.
 const panel = document.getElementById('native-computer-panel');
+const helperSetup = document.getElementById('computer-helper-setup');
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element; };
 let current = null, windows = [], busy = false, lastState = '';
 let permissionButton;
@@ -34,7 +35,12 @@ function render(state) {
   if (!current) mode.value = state.defaultMode;
   if (permissionButton) permissionButton.hidden = state.platform !== 'darwin';
   current = state;
-  status.textContent = `${state.backend}. ${state.installed ? 'Helper built.' : 'Helper not built: run npm run computer:build.'} ${state.enabled ? 'Desktop lease enabled.' : 'Desktop lease disabled.'}`;
+  for (const option of mode.options) option.disabled = !!state.relay && option.value !== 'background';
+  if (state.relay) mode.value = 'background';
+  legacy.disabled = !!state.relay;
+  if (permissionButton && state.relay) permissionButton.hidden = true;
+  if (helperSetup) helperSetup.hidden = state.installed !== false;
+  status.textContent = `${state.backend}. ${state.relay ? (state.installed ? 'Codex runtime available. App approvals remain in effect.' : 'Install Codex and enable its Computer Use plugin.') : (state.installed ? 'Desktop helper installed.' : 'Desktop helper missing. See Desktop helper setup above.')} ${state.enabled ? 'Desktop lease enabled.' : 'Desktop lease disabled.'}`;
   legacy.checked = !!state.legacyEnabled;
   ruleList.replaceChildren(); sessionList.replaceChildren();
   if (!state.rules.length) ruleList.append(node('p', 'Every application and input mode asks for local approval by default.', 'muted'));
@@ -48,8 +54,9 @@ function render(state) {
     }));
     ruleList.append(row);
   }
-  if (!state.sessions.length) sessionList.append(node('p', 'No native computer sessions.', 'muted'));
-  for (const session of state.sessions) {
+  const allSessions = [...state.sessions, ...(state.replSessions || [])];
+  if (!allSessions.length) sessionList.append(node('p', 'No computer sessions.', 'muted'));
+  for (const session of allSessions) {
     const row = node('div', undefined, 'workspace');
     row.append(node('span', `${session.appName || session.appId} · ${session.mode} · expires ${new Date(session.expiresAt).toLocaleTimeString()}`),
       button('End session', () => api('/api/computer/session/end', { sessionId: session.id })));

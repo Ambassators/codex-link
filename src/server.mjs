@@ -10,6 +10,7 @@ import { Jobs } from './jobs.mjs';
 import { Computer } from './computer.mjs';
 import { Tailscale } from './tailscale.mjs';
 import { Tools } from './tools.mjs';
+import { Updates } from './updates.mjs';
 import { handleMcp } from './mcp.mjs';
 import { findExecutable, pythonCommand } from './process.mjs';
 import { id, hash, equal, assert, HttpError, json, html, readBody, securityHeaders, safeError } from './util.mjs';
@@ -30,7 +31,7 @@ class Limiter {
     if (this.buckets.size > 2000) for (const [k, b] of this.buckets) if (b.until < t) this.buckets.delete(k);
   }
 }
-export async function createBridge({ home, config = new Config(home), adminPort, publicPort, chooseFolder, codexHome } = {}) {
+export async function createBridge({ home, config = new Config(home), adminPort, publicPort, chooseFolder, codexHome, autoEnableConnection = false } = {}) {
   const adminToken = id(48), bootAt = Date.now(), limiter = new Limiter();
   const auditFile = path.join(config.home, 'audit.jsonl');
   const audit = (event, details = {}) => {
@@ -39,17 +40,28 @@ export async function createBridge({ home, config = new Config(home), adminPort,
   };
   const oauth = new OAuth(config, audit), workspaces = new Workspaces(config), jobs = new Jobs(config);
   const computer = new Computer(config), tailscale = new Tailscale(config), codexImport = new CodexImport(config, workspaces, codexHome);
-  const services = { config, oauth, workspaces, jobs, computer, tailscale, codexImport, audit };
+  const updates = new Updates();
+  const services = { updates, config, oauth, workspaces, jobs, computer, tailscale, codexImport, audit };
   const tools = new Tools(services); services.tools = tools;
   const localPrincipal = { clientId: 'local-owner', grantId: 'local', scopes: SCOPES };
   let actualAdminPort = adminPort ?? config.value.adminPort, actualPublicPort = publicPort ?? config.value.publicPort;
+  const enableConnection = () => {
+    const existing = jobs.list().find(j => j.kind === 'setup' && ['queued', 'running'].includes(j.status));
+    if (existing) return jobs.view(existing.id);
+    return jobs.create({ kind: 'setup', title: 'Enable MCP connection', principal: localPrincipal, approval: false }, async c => {
+      const result = await tailscale.enable(c);
+      if (result.changedOrigin) oauth.revokeAll();
+      return result;
+    });
+  };
   let diagnostics = null;
   const state = () => ({
     folderPicker: typeof chooseFolder === 'function', app: 'Codex Link', version: '0.2.0', platform: process.platform, uptimeSeconds: Math.floor((Date.now() - bootAt) / 1000),
     publicOrigin: config.value.publicOrigin, mcpUrl: config.value.publicOrigin ? `${config.value.publicOrigin}/mcp` : null,
     settings: Object.fromEntries(['remotePaused', 'autoApproveWrites', 'autoApproveShell', 'dangerousModeEnabled', 'computerAlwaysEnabled', 'funnelManaged', 'redirectUris'].map(k => [k, config.value[k]])),
-    computerNative: computer.native.summary(), computerEnabledUntil: config.value.computerEnabledUntil, workspaces: workspaces.list(),
+    computerNative: { ...computer.native.summary(), replSessions: computer.repl?.summary() || [] }, computerEnabledUntil: config.value.computerEnabledUntil, workspaces: workspaces.list(),
     projectSetupComplete: !!config.value.projectSetupComplete, codexImport: codexImport.summary(),
+    updates: updates.list(oauth.connections()),
     jobs: jobs.list().map(({ request, result, ...j }) => j), connections: oauth.connections(), diagnostics
   });
   const disableDangerousMode = () => {
@@ -77,7 +89,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
       const after = url.searchParams.has('after') ? Number(url.searchParams.get('after')) : Math.max(0, (j.events.at(-200)?.seq || 1) - 1);
       return json(res, 200, jobs.view(j.id, null, after, 200));
     }
-    if (req.method === 'GET' && url.pathname === '/api/computer/native') return json(res, 200, { ...computer.native.summary(), diagnostics: await computer.native.capabilities() });
+    if (req.method === 'GET' && url.pathname === '/api/computer/native') return json(res, 200, { ...computer.native.summary(), replSessions: computer.repl?.summary() || [], diagnostics: await computer.native.capabilities() });
     if (req.method === 'GET' && url.pathname === '/api/computer/windows') return json(res, 200, await computer.native.windows(localPrincipal));
     if (req.method === 'GET' && url.pathname === '/api/tools') return json(res, 200, { tools: tools.list() });
     if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
@@ -89,6 +101,8 @@ export async function createBridge({ home, config = new Config(home), adminPort,
     assert(req.method === 'POST', 'Not found', 404);
     const body = await readBody(req, 4 * 1024 * 1024);
     switch (url.pathname) {
+      case '/api/updates': return json(res, 200, updates.add(body, oauth.connections()));
+      case '/api/updates/cancel': return json(res, 200, updates.cancel(body.id));
       case '/api/workspaces': return json(res, 200, config.addWorkspace(body.name, body.root));
       case '/api/import/codex': return json(res, 200, await codexImport.importAll());
       case '/api/project-setup/complete': {
@@ -132,6 +146,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         config.value.computerAlwaysEnabled = body.enabled;
         config.save();
         if (!body.enabled) { computer.stop(); for (const j of jobs.store.data.jobs) if (j.kind === 'computer') jobs.cancel(j.id); }
+        if (body.enabled) for (const j of jobs.store.data.jobs) if (j.status === 'awaiting_approval' && !j.permissionRequest) jobs.approve(j.id, true);
         audit('owner.dangerous_mode', { enabled: body.enabled }); return json(res, 200, state());
       }
       case '/api/computer/permissions': {
@@ -154,6 +169,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
       case '/api/computer/session/end': {
         assert(typeof body.sessionId === 'string', 'sessionId is required');
         computer.native.closeInternal(body.sessionId);
+        computer.repl?.closeInternal(body.sessionId);
         audit('owner.computer_session_closed', { sessionId: body.sessionId });
         return json(res, 200, computer.native.summary());
       }
@@ -168,13 +184,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         audit('owner.computer_permission', { enabled: body.enabled, persistent }); return json(res, 200, state());
       }
       case '/api/tailscale/enable': {
-        const existing = jobs.list().find(j => j.kind === 'setup' && ['queued', 'running'].includes(j.status));
-        if (existing) return json(res, 200, jobs.view(existing.id));
-        return json(res, 200, jobs.create({ kind: 'setup', title: 'Enable MCP connection', principal: localPrincipal, approval: false }, async c => {
-          const result = await tailscale.enable(c);
-          if (result.changedOrigin) oauth.revokeAll();
-          return result;
-        }));
+        return json(res, 200, enableConnection());
       }
       case '/api/tailscale/disable': {
         const result = await tailscale.disable(); config.value.publicOrigin = ''; disableDangerousMode(); config.value.computerEnabledUntil = 0; config.value.computerAlwaysEnabled = false; config.save(); oauth.revokeAll(); jobs.stopAll(); computer.stop();
@@ -213,6 +223,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
     actualAdminPort = await listen(adminServer, actualAdminPort); actualPublicPort = await listen(publicServer, actualPublicPort);
   } catch (e) { await close(adminServer); await close(publicServer); throw e; }
   config.value.adminPort = actualAdminPort; config.value.publicPort = actualPublicPort; config.save();
+  if (autoEnableConnection && (!config.value.publicOrigin || config.value.funnelManaged)) enableConnection();
   audit('bridge.started', { adminPort: actualAdminPort, publicPort: actualPublicPort });
   return { ...services, state, adminToken, adminPort: actualAdminPort, publicPort: actualPublicPort,
     adminUrl: `http://127.0.0.1:${actualAdminPort}/#token=${adminToken}`,

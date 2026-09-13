@@ -33,7 +33,7 @@ try:
         assert "token=" not in page.url, "Private bootstrap token must leave browser address bar"
         assert page.get_by_role("button", name="Sign in to Codex").count() == 0
         assert page.locator("#step-client").get_attribute("open") is not None
-        out = ROOT / "docs/screenshots"
+        out = Path(os.environ.get("UI_SCREENSHOT_DIR", str(ROOT / "docs/screenshots")))
         out.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(out / "setup-first-run.png"), full_page=True)
         page.screenshot(path=str(out / "setup.png"), full_page=True)
@@ -73,6 +73,11 @@ try:
         page.locator("#workspaces strong").filter(has_text="ui-test-project").wait_for(state="attached")
         page.get_by_role("button", name="Done adding projects", exact=True).click()
         page.get_by_role("heading", name="You're connected", exact=True).wait_for()
+        page.reload()
+        expect(page.locator('.tab[data-tab="activity"]')).to_have_attribute("aria-current", "page")
+        page.locator('.tab[data-tab="setup"]').click()
+        page.wait_for_timeout(1700)
+        expect(page.locator('.tab[data-tab="setup"]')).to_have_attribute("aria-current", "page")
         args = {"workspace": "ui-test-project", "path": "approved-from-ui.txt", "text": "Real MCP write approved through the browser UI.\n", "expectedHash": None, "idempotencyKey": "browser-write"}
         result = context.request.post(resource, headers={"Authorization": "Bearer " + bearer, "Accept": "application/json, text/event-stream"}, data={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "file_write", "arguments": args}})
         assert result.json()["result"]["structuredContent"]["status"] == "awaiting_approval"
@@ -82,6 +87,17 @@ try:
         page.get_by_role("button", name="Approve once", exact=True).click()
         expect(page.locator("#job-state")).to_have_text("completed")
         assert (Path(info["root"]) / args["path"]).read_text() == args["text"]
+        page.locator('#update-compose > summary').click()
+        page.locator('#update-text').fill('Focus on login first')
+        page.get_by_role('button', name='Queue update', exact=True).click()
+        expect(page.locator('#updates')).to_contain_text('queued')
+        update_result = context.request.post(resource, headers={"Authorization": "Bearer " + bearer, "Accept": "application/json, text/event-stream"}, data={"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "bridge_status"}}).json()['result']
+        assert 'Focus on login first' in update_result['content'][-1]['text']
+        expect(page.locator('#updates')).to_contain_text('returned')
+        page.locator('#update-text').fill('Cancel this update')
+        page.get_by_role('button', name='Queue update', exact=True).click()
+        page.get_by_role('button', name='Cancel update', exact=True).click()
+        expect(page.locator('#updates')).to_contain_text('cancelled')
         page.screenshot(path=str(out / "activity.png"), full_page=True)
         for width in [375, 430, 768, 1100]:
             page.set_viewport_size({"width": width, "height": 932})

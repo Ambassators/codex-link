@@ -3,6 +3,7 @@ import { validate, str, obj, integer } from './schema.mjs';
 import { runProcess, shellCommand, findExecutable } from './process.mjs';
 import { imageType } from './workspaces.mjs';
 import { installNativeComputerTools } from './native-computer-tools.mjs';
+import { installComputerReplTools } from './computer-repl-tools.mjs';
 
 export const textResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value && typeof value === 'object' && !Array.isArray(value) ? value : { value } });
 export const imageResult = (data, mimeType, info = {}) => ({ content: [{ type: 'text', text: JSON.stringify(info) }, { type: 'image', mimeType, data }], structuredContent: info });
@@ -17,7 +18,7 @@ function cleanRequest(value) {
 }
 export class Tools {
   constructor(services) {
-    Object.assign(this, services); this.definitions = new Map(); this.install(); installNativeComputerTools(this);
+    Object.assign(this, services); this.definitions = new Map(); this.install(); installNativeComputerTools(this); installComputerReplTools(this);
   }
   add(name, description, inputSchema, scopes, readOnly, handler, openWorld = false) {
     const securitySchemes = [{ type: 'oauth2', scopes }];
@@ -38,7 +39,7 @@ export class Tools {
       const previous = this.jobs.store.data.jobs.find(j => j.clientId === principal.clientId && j.idempotencyKey === args.idempotencyKey);
       assert(!previous || previous.payloadHash === payloadHash, 'Idempotency key used with different arguments', 409);
     }
-    const result = this.jobs.create({ kind, title, principal, scopes, approval, key: args.idempotencyKey, request: cleanRequest(auditRequest) }, runner);
+    const result = this.jobs.create({ kind, title, principal, scopes, approval: approval && !this.config.value.dangerousModeEnabled, key: args.idempotencyKey, request: cleanRequest(auditRequest) }, runner);
     this.jobs.get(result.id).payloadHash = payloadHash; this.jobs.store.save(); return result;
   }
   install() {
@@ -84,7 +85,7 @@ export class Tools {
     this.add('computer_screenshot', 'LEGACY, unscoped: prefer computer_observe with an approved window session. Requires the separate local legacy opt-in. Capture the primary display as MCP image content while computer control is locally enabled. The owner can enable a temporary or persistent session. Image coordinates match primary-display logical input coordinates. Can reveal sensitive screen contents.', empty, ['computer:use'], true, async () => {
       const { data, mimeType, ...info } = await this.computer.action({ action: 'screenshot' }); return imageResult(data, mimeType, info);
     });
-    this.add('computer_action', 'LEGACY, unscoped: prefer computer_interact with an approved window session. Requires the separate local legacy opt-in; native app rules do not constrain this tool. Operate the primary desktop while computer control is locally enabled. The owner can enable a temporary or persistent session. Uses standard mouse/keyboard automation. Move the mouse to a corner to trigger the fail-safe. Returns a job.', obj({ action: { type: 'string', enum: ['move', 'click', 'double_click', 'drag', 'type', 'key', 'scroll'] }, x: integer(0, 20000, 'Logical X'), y: integer(0, 20000, 'Logical Y'), button: { type: 'string', enum: ['left', 'right', 'middle'] }, text: { type: 'string', maxLength: 20000 }, keys: { type: 'array', items: str('PyAutoGUI key name', 40), maxItems: 5, minItems: 1 }, amount: integer(-30, 30, 'Scroll steps; positive means up'), idempotencyKey: key }, ['action', 'idempotencyKey']), ['computer:use'], false, (a, p) => {
+    this.add('computer_action', 'LEGACY, unscoped: unavailable on macOS; use computer_js. On Windows prefer computer_interact with an approved window session. Requires the separate local legacy opt-in; native app rules do not constrain this tool. Operate the primary desktop while computer control is locally enabled. The owner can enable a temporary or persistent session. Uses standard mouse/keyboard automation. Move the mouse to a corner to trigger the fail-safe. Returns a job.', obj({ action: { type: 'string', enum: ['move', 'click', 'double_click', 'drag', 'type', 'key', 'scroll'] }, x: integer(0, 20000, 'Logical X'), y: integer(0, 20000, 'Logical Y'), button: { type: 'string', enum: ['left', 'right', 'middle'] }, text: { type: 'string', maxLength: 20000 }, keys: { type: 'array', items: str('PyAutoGUI key name', 40), maxItems: 5, minItems: 1 }, amount: integer(-30, 30, 'Scroll steps; positive means up'), idempotencyKey: key }, ['action', 'idempotencyKey']), ['computer:use'], false, (a, p) => {
       assert(this.computer.enabled(), 'Enable computer control locally first', 403);
       return this.job('computer', `Desktop: ${a.action}`, a, p, ['computer:use'], false, c => this.computer.action(a, c));
     }, true);

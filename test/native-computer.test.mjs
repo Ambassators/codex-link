@@ -129,10 +129,16 @@ test('Windows background sessions allow semantic UI Automation but never global 
   await assert.rejects(f.interact(s, o, 'click', { x: 20, y: 20 }), /UI Automation/);
   await f.interact(s, o); assert.equal(f.calls.at(-1).action, 'invoke');
 });
-test('background dragging and focus changes require a separately approved foreground session', async () => {
+test('macOS background drag maps both endpoints without granting foreground access', async () => {
   const f = fixture(), s = await f.start(), o = await f.observe(s);
   await assert.rejects(f.interact(s, o, 'focus'), /foreground/);
-  await assert.rejects(f.interact(s, o, 'drag', { x: 0, y: 0, toX: 10, toY: 10 }), /foreground/);
+  await assert.rejects(f.interact(s, o, 'drag', { x: 0, y: 0, toX: 601, toY: 10 }), /outside/i);
+  await f.interact(s, o, 'drag', { x: 0, y: 0, toX: 10, toY: 10 });
+  assert.equal(f.calls.at(-1).mode, 'background');
+  assert.deepEqual([f.calls.at(-1).x, f.calls.at(-1).y, f.calls.at(-1).toX, f.calls.at(-1).toY], [-1600, 100, -1580, 120]);
+  await assert.rejects(f.interact(s, o, 'drag', { x: 0, y: 0, toX: 10, toY: 10 }), /already used/);
+  const w = fixture({ platform: 'win32' }), ws = await w.start('70', 'background'), wo = await w.observe(ws);
+  await assert.rejects(w.interact(ws, wo, 'drag', { x: 0, y: 0, toX: 10, toY: 10 }), /UI Automation/);
 });
 test('a protected accessibility element cannot be targeted', async () => {
   const f = fixture(), s = await f.start(), o = await f.observe(s);

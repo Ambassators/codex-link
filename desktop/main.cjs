@@ -12,7 +12,7 @@ else {
     const { dataDirectory } = await import(pathToFileURL(path.join(root, 'src/config.mjs')).href);
     const { acquireLock } = await import(pathToFileURL(path.join(root, 'src/main.mjs')).href);
     const { createBridge } = await import(pathToFileURL(path.join(root, 'src/server.mjs')).href);
-    unlock = acquireLock(dataDirectory()); bridge = await createBridge({ chooseFolder: async () => {
+    unlock = acquireLock(dataDirectory()); bridge = await createBridge({ autoEnableConnection: true, chooseFolder: async () => {
       const result = await dialog.showOpenDialog(window, { title: 'Choose a folder to share', properties: ['openDirectory'], buttonLabel: 'Share folder' });
       return result.canceled ? null : result.filePaths[0];
     } });

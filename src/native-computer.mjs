@@ -90,7 +90,7 @@ export class NativeComputer {
       defaultMode: this.platform === 'darwin' ? 'background' : 'foreground',
       sessionSeconds: SESSION_MS / 1000, observationSeconds: OBSERVATION_MS / 1000,
       lockedUse: false, independentSystemCursor: false,
-      legacyEnabled: this.config.value.computerLegacyEnabled === true
+      legacyEnabled: this.config.value.dangerousModeEnabled === true || this.config.value.computerLegacyEnabled === true
     };
   }
   assertEnabled() {
@@ -106,6 +106,7 @@ export class NativeComputer {
   }
   rules() { return this.config.value.computerAppRules || []; }
   decision(target, mode) {
+    if (this.config.value.dangerousModeEnabled === true) return 'allow';
     const rules = this.rules().filter(r => r.appId === target.appId && r.executable === target.executable);
     if (rules.some(r => r.decision === 'block')) return 'block';
     return rules.some(r => r.mode === mode && r.decision === 'allow') ? 'allow' : 'ask';
@@ -295,7 +296,7 @@ export class NativeComputer {
         action.element = { path: element.path, fingerprint: element.fingerprint };
       }
       if (s.mode === 'background') {
-        assert(!['focus', 'drag'].includes(args.action), 'This action requires an explicitly approved foreground session');
+        assert(args.action !== 'focus', 'This action requires an explicitly approved foreground session');
         if (this.platform === 'win32') assert(['invoke', 'set_value', 'select', 'toggle', 'expand', 'collapse'].includes(args.action), 'Windows background mode supports UI Automation actions only; request foreground mode for pointer/keyboard input');
       }
       // Consume observations before dispatch, including on errors. Never replay an uncertain UI side effect.

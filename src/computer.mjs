@@ -1,13 +1,16 @@
 import { fileURLToPath } from 'node:url';
 import { NativeComputer } from './native-computer.mjs';
+import { CodexComputer } from './codex-computer.mjs';
+import { ComputerRepl } from './computer-repl.mjs';
 import { pythonCommand, runProcess } from './process.mjs';
 import { assert } from './util.mjs';
 export class Computer {
-  constructor(config) { this.config = config; this.tail = Promise.resolve(); this.controllers = new Set(); this.generation = 0; this.native = new NativeComputer(this); }
-  stop() { this.native.stop(); this.generation++; for (const c of this.controllers) c.abort(); }
+  constructor(config) { this.config = config; this.tail = Promise.resolve(); this.controllers = new Set(); this.generation = 0; this.native = process.platform === 'darwin' ? new CodexComputer(this) : new NativeComputer(this); this.repl = this.native.relay ? new ComputerRepl(this) : null; }
+  stop() { this.repl?.stop(); this.native.stop(); this.generation++; for (const c of this.controllers) c.abort(); }
   enabled() { return this.config.value.computerAlwaysEnabled || this.config.value.computerEnabledUntil > Date.now(); }
+  legacyEnabled() { return !this.native.relay && (this.config.value.dangerousModeEnabled === true || this.config.value.computerLegacyEnabled === true); }
   async action(args, context = {}) {
-    assert(this.config.value.computerLegacyEnabled === true, 'Unscoped legacy desktop control is disabled. Use the native session tools, or explicitly enable legacy access in the local panel.', 403);
+    assert(this.legacyEnabled(), 'Unscoped legacy desktop control is disabled. Use the native session tools, or explicitly enable legacy access in the local panel.', 403);
     assert(this.enabled(), 'Computer control is disabled. The owner must enable it in the local UI.', 403);
     const generation = this.generation;
     const run = async () => {
