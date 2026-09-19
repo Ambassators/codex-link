@@ -18,8 +18,9 @@ export function assert(ok, message, status = 400) { if (!ok) throw new HttpError
 export function atomicJson(filename, data) {
   mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
   const tmp = `${filename}.${id(8)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  const fd = openSync(tmp, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+  // Windows requires a writable handle when flushing file buffers.
+  const fd = openSync(tmp, 'wx', 0o600);
+  try { writeFileSync(fd, JSON.stringify(data, null, 2) + '\n'); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, filename);
   if (process.platform !== 'win32') chmodSync(filename, 0o600);
 }

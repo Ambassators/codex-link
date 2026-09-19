@@ -63,8 +63,9 @@ export class Workspaces {
       await this.resolve(name, relative, { create: true });
       const temp = path.join(path.dirname(file), `.codex-link-${id(12)}.tmp`);
       try {
-        await fs.writeFile(temp, content, { flag: 'wx', mode });
-        const handle = await fs.open(temp, 'r'); try { await handle.sync(); } finally { await handle.close(); }
+        // Keep the writable handle: Windows cannot flush a read-only handle.
+        const handle = await fs.open(temp, 'wx', mode);
+        try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
         await fs.rename(temp, file);
       } finally { await fs.rm(temp, { force: true }).catch(() => {}); }
       return { path: relative, previousSha256: before, sha256: hash(content), bytes: Buffer.byteLength(content) };
