@@ -194,6 +194,12 @@ export async function createBridge({ home, config = new Config(home), adminPort,
     }
   }
   async function remote(req, res) {
+    // Record discovery outcomes without credentials, query strings, or request bodies.
+    // A local health check alone cannot show whether an MCP client reached us.
+    const discoveryPath = req.url.split('?')[0];
+    if (['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-authorization-server', '/.well-known/oauth-authorization-server/mcp', '/.well-known/openid-configuration', '/mcp'].includes(discoveryPath) && !req.headers.authorization) {
+      res.once('finish', () => audit('oauth.discovery', { method: req.method, path: discoveryPath, status: res.statusCode }));
+    }
     securityHeaders(res);
     const origin = config.value.publicOrigin;
     const allowedHost = origin ? new URL(origin).host : '';

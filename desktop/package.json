@@ -1,6 +1,6 @@
 {
   "name": "codex-link-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OAuth-protected MCP server for local files, shell commands and optional desktop control",
   "main": "main.cjs",
   "private": true,

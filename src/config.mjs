@@ -54,7 +54,7 @@ export class Config {
     assert(typeof name === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(name), 'Workspace name must use letters, numbers, underscores or hyphens');
     assert(!this.value.workspaces.some(w => w.name === name), 'Workspace name already exists');
     assert(typeof root === 'string' && path.isAbsolute(root), 'Choose an absolute workspace directory');
-    root = realpathSync(root); assert(statSync(root).isDirectory(), 'Workspace must be a directory');
+    root = realpathSync.native(root); assert(statSync(root).isDirectory(), 'Workspace must be a directory');
     assert(root !== path.parse(root).root, 'Do not expose an entire drive');
     const rel = path.relative(root, this.home);
     assert(rel.startsWith('..' + path.sep) || rel === '..' || path.isAbsolute(rel), 'Workspace must not contain Codex Link credentials; use a project subdirectory');

@@ -1,19 +1,36 @@
-import { spawn } from 'node:child_process';
-import { openSync, writeFileSync, readFileSync, rmSync, mkdirSync, closeSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { openSync, writeFileSync, readFileSync, rmSync, mkdirSync, closeSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dataDirectory } from './config.mjs';
 import { createBridge } from './server.mjs';
 
+function reusedWindowsPid(pid, lockModifiedAt) {
+  // A PID can belong to an unrelated process after a crash or reboot. A process
+  // started after the lock was written cannot own that lock. Keep the lock if
+  // Windows cannot report the start time, rather than risk two active writers.
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference = 'Stop'; [Console]::Write(([DateTimeOffset](Get-Process -Id ${pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds())`],
+  { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+  if (result.error || result.status !== 0 || !/^\d+$/.test(result.stdout.trim())) return false;
+  // Allow for filesystem timestamp precision.
+  return Number(result.stdout.trim()) > lockModifiedAt + 1000;
+}
+
 export function acquireLock(home) {
   mkdirSync(home, { recursive: true, mode: 0o700 }); const lock = path.join(home, 'instance.lock');
-  try { const fd = openSync(lock, 'wx', 0o600); writeFileSync(fd, String(process.pid)); closeSync(fd); }
+  try { const fd = openSync(lock, 'wx', 0o600); try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); } }
   catch (e) {
     if (e.code !== 'EEXIST') throw e;
-    let previous; try { previous = Number(readFileSync(lock, 'utf8')); } catch { throw new Error('Cannot inspect existing app lock'); }
-    if (!Number.isInteger(previous) || previous < 1) throw new Error('Invalid instance.lock; inspect it before removing it');
-    try { process.kill(previous, 0); throw new Error(`Codex Link is already running (PID ${previous})`); }
-    catch (probe) { if (probe.code !== 'ESRCH') throw probe; }
+    let previous, modifiedAt; try { previous = Number(readFileSync(lock, 'utf8')); modifiedAt = statSync(lock).mtimeMs; } catch { throw new Error('Cannot inspect existing app lock'); }
+    if (!Number.isSafeInteger(previous) || previous < 1 || previous > 0xffffffff) throw new Error('Invalid instance.lock; inspect it before removing it');
+    let alive = true;
+    try { process.kill(previous, 0); }
+    catch (probe) { if (probe.code !== 'ESRCH') throw probe; alive = false; }
+    if (alive && !(process.platform === 'win32' && reusedWindowsPid(previous, modifiedAt))) throw new Error(`Codex Link is already running (PID ${previous})`);
+    // Another starter may have recovered this stale lock while we inspected it.
+    if (Number(readFileSync(lock, 'utf8')) !== previous || statSync(lock).mtimeMs !== modifiedAt) return acquireLock(home);
     rmSync(lock); return acquireLock(home);
   }
   return () => { try { if (readFileSync(lock, 'utf8') === String(process.pid)) rmSync(lock); } catch {} };

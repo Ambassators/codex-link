@@ -78,6 +78,16 @@ test('HTTP Computer Use REPL requires execution scope and returns native images 
   await admin('/api/computer',{enabled:false});assert.equal(b.computer.repl.sessions.size,0);
 });
 
+test('discovery diagnostics record failures without query secrets', async t => {
+  const { b, remote } = await server(t);
+  const response = await fetch(remote + '/.well-known/oauth-authorization-server/mcp?secret=do-not-log');
+  assert.equal(response.status, 404);
+  const audit = readFileSync(path.join(b.config.home, 'audit.jsonl'), 'utf8');
+  const entries = audit.trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(entries.some(e => e.event === 'oauth.discovery' && e.details.path === '/.well-known/oauth-authorization-server/mcp' && e.details.status === 404));
+  assert.equal(audit.includes('do-not-log'), false);
+});
+
 test('HTTP OAuth discovery, DCR, browser pairing, consent, PKCE token and authenticated MCP', async t => {
   const { b, remote, rpc } = await server(t);
   const meta = await (await fetch(remote + '/.well-known/oauth-protected-resource/mcp')).json();
@@ -198,7 +208,7 @@ test('desktop folder picker only runs through the authenticated owner API', asyn
   const url = `http://127.0.0.1:${b.adminPort}/api/workspaces/choose`;
   assert.equal((await fetch(url, { method: 'POST', body: '{}' })).status, 401); assert.equal(calls, 0);
   const response = await fetch(url, { method: 'POST', headers: { 'X-Codex-Link-Admin': b.adminToken, 'Content-Type': 'application/json' }, body: '{}' });
-  assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal((await response.json()).root, realpathSync(f.root));
+  assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal((await response.json()).root, realpathSync.native(f.root));
 });
 
 test('local owner can enable dangerous mode and persistent computer control', async t => {
