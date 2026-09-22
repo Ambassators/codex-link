@@ -9,6 +9,7 @@ import { CodexImport } from './codex-import.mjs';
 import { Jobs } from './jobs.mjs';
 import { Computer } from './computer.mjs';
 import { Tailscale } from './tailscale.mjs';
+import { checkPublicConnection } from './connection-health.mjs';
 import { Tools } from './tools.mjs';
 import { Updates } from './updates.mjs';
 import { handleMcp } from './mcp.mjs';
@@ -31,7 +32,7 @@ class Limiter {
     if (this.buckets.size > 2000) for (const [k, b] of this.buckets) if (b.until < t) this.buckets.delete(k);
   }
 }
-export async function createBridge({ home, config = new Config(home), adminPort, publicPort, chooseFolder, codexHome, autoEnableConnection = false } = {}) {
+export async function createBridge({ home, config = new Config(home), adminPort, publicPort, chooseFolder, codexHome, autoEnableConnection = false, checkConnection = checkPublicConnection } = {}) {
   const adminToken = id(48), bootAt = Date.now(), limiter = new Limiter();
   const auditFile = path.join(config.home, 'audit.jsonl');
   const audit = (event, details = {}) => {
@@ -45,19 +46,37 @@ export async function createBridge({ home, config = new Config(home), adminPort,
   const tools = new Tools(services); services.tools = tools;
   const localPrincipal = { clientId: 'local-owner', grantId: 'local', scopes: SCOPES };
   let actualAdminPort = adminPort ?? config.value.adminPort, actualPublicPort = publicPort ?? config.value.publicPort;
-  const enableConnection = () => {
+  let connectionHealth = { origin: '', status: 'unknown', message: 'Public connectivity has not been checked.', checkedAt: null };
+  let healthController, healthTimer, healthGeneration = 0;
+  const refreshConnection = async () => {
+    const generation = ++healthGeneration, origin = config.value.publicOrigin;
+    healthController?.abort(); healthController = new AbortController();
+    connectionHealth = { origin, status: origin ? 'checking' : 'disabled', message: origin ? 'Checking public connectivity…' : 'Connection disabled.', checkedAt: null };
+    try {
+      const result = await checkConnection(origin, { signal: healthController.signal });
+      if (generation === healthGeneration && origin === config.value.publicOrigin) connectionHealth = result;
+    } catch (e) {
+      if (generation === healthGeneration && !healthController.signal.aborted) connectionHealth = { origin, status: 'unknown', message: 'Could not verify public connectivity.', checkedAt: Date.now() };
+    }
+    return connectionHealth;
+  };
+  const enableConnection = (reconnect = false) => {
     const existing = jobs.list().find(j => j.kind === 'setup' && ['queued', 'running'].includes(j.status));
     if (existing) return jobs.view(existing.id);
     return jobs.create({ kind: 'setup', title: 'Enable MCP connection', principal: localPrincipal, approval: false }, async c => {
-      const result = await tailscale.enable(c);
+      const result = await tailscale.enable(c, { reconnect });
       if (result.changedOrigin) oauth.revokeAll();
-      return result;
+      c.emit('setup.message', { text: 'Checking the public connection…' });
+      const health = await refreshConnection();
+      c.emit('setup.message', { text: health.message });
+      return { ...result, connectionHealth: health };
     });
   };
   let diagnostics = null;
   const state = () => ({
     folderPicker: typeof chooseFolder === 'function', app: 'Codex Link', version: '0.2.0', platform: process.platform, uptimeSeconds: Math.floor((Date.now() - bootAt) / 1000),
     publicOrigin: config.value.publicOrigin, mcpUrl: config.value.publicOrigin ? `${config.value.publicOrigin}/mcp` : null,
+    connectionHealth,
     settings: Object.fromEntries(['remotePaused', 'autoApproveWrites', 'autoApproveShell', 'dangerousModeEnabled', 'computerAlwaysEnabled', 'funnelManaged', 'redirectUris'].map(k => [k, config.value[k]])),
     computerNative: { ...computer.native.summary(), replSessions: computer.repl?.summary() || [] }, computerEnabledUntil: config.value.computerEnabledUntil, workspaces: workspaces.list(),
     projectSetupComplete: !!config.value.projectSetupComplete, codexImport: codexImport.summary(),
@@ -125,7 +144,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
       }
       case '/api/origin': {
         const previous = config.value.publicOrigin; config.setOrigin(body.origin);
-        if (previous !== config.value.publicOrigin) oauth.revokeAll(); return json(res, 200, state());
+        if (previous !== config.value.publicOrigin) oauth.revokeAll(); void refreshConnection(); return json(res, 200, state());
       }
       case '/api/pair': return json(res, 200, oauth.pairTicket());
       case '/api/approve': {
@@ -184,10 +203,11 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         audit('owner.computer_permission', { enabled: body.enabled, persistent }); return json(res, 200, state());
       }
       case '/api/tailscale/enable': {
-        return json(res, 200, enableConnection());
+        return json(res, 200, enableConnection(true));
       }
       case '/api/tailscale/disable': {
         const result = await tailscale.disable(); config.value.publicOrigin = ''; disableDangerousMode(); config.value.computerEnabledUntil = 0; config.value.computerAlwaysEnabled = false; config.save(); oauth.revokeAll(); jobs.stopAll(); computer.stop();
+        void refreshConnection();
         return json(res, 200, result);
       }
       default: throw new HttpError(404, 'Not found');
@@ -230,9 +250,11 @@ export async function createBridge({ home, config = new Config(home), adminPort,
   } catch (e) { await close(adminServer); await close(publicServer); throw e; }
   config.value.adminPort = actualAdminPort; config.value.publicPort = actualPublicPort; config.save();
   if (autoEnableConnection && (!config.value.publicOrigin || config.value.funnelManaged)) enableConnection();
+  else if (autoEnableConnection) void refreshConnection();
+  if (autoEnableConnection) { healthTimer = setInterval(() => { if (!jobs.list().some(j => j.kind === 'setup' && ['queued', 'running'].includes(j.status))) void refreshConnection(); }, 30000); healthTimer.unref(); }
   audit('bridge.started', { adminPort: actualAdminPort, publicPort: actualPublicPort });
   return { ...services, state, adminToken, adminPort: actualAdminPort, publicPort: actualPublicPort,
     adminUrl: `http://127.0.0.1:${actualAdminPort}/#token=${adminToken}`,
-    async close() { config.value.computerEnabledUntil = 0; computer.stop(); await jobs.close(); await Promise.all([close(adminServer), close(publicServer)]); audit('bridge.stopped'); }
+    async close() { clearInterval(healthTimer); ++healthGeneration; healthController?.abort(); config.value.computerEnabledUntil = 0; computer.stop(); await jobs.close(); await Promise.all([close(adminServer), close(publicServer)]); audit('bridge.stopped'); }
   };
 }

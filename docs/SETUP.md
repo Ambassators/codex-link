@@ -39,7 +39,7 @@ The `computer:use` permission is for optional desktop control. You still enable 
 
 3. After selecting DCR, copy the full **Callback URL** shown in ChatGPT. In **Codex Link → Settings → Advanced → Allowed OAuth callbacks**, add it on a new line, keep the existing addresses, and click **Save callbacks**.
 4. Return to **Codex Link → Connection → Connect ChatGPT**. Click **Verify my browser**, then **Open verification link**. Use the same browser and profile where ChatGPT is signed in. Open the link within 90 seconds; if it expires, click **Verify my browser** again.
-5. Return to ChatGPT and save the connection. Follow the authorization prompt, review the permissions, and select **Authorize**. Codex Link shows **Client connected** when authorization succeeds.
+5. Return to ChatGPT and save the connection. Follow the authorization prompt, review the permissions, and select **Authorize**. Codex Link shows **Client authorized** when authorization succeeds.
 
 See the [official OpenAI OAuth setup guide](https://developers.openai.com/plugins/build/auth#client-registration) for registration and callback details.
 
@@ -99,3 +99,5 @@ State contains config, OAuth hashes/grants, recent jobs, audit logs, and lightwe
 | Desktop helper missing | Install the optional helper from source and grant OS permissions. |
 
 For removal, disconnect clients, disable the public URL, quit, then remove the app. Remove private state only if you intend to discard configuration and history. Shared dependencies remain separate.
+
+The app checks public DNS and the HTTPS health endpoint every 30 seconds. **Client authorized** means credentials are saved; **Connection ready** also requires a successful public connectivity check. Private Tailscale access alone is not sufficient. If public DNS is missing, allow up to 10 minutes for Tailscale DNS publication. **Reconnect** restarts only the matching app-managed Funnel listener without changing the URL or revoking clients.

@@ -72,7 +72,7 @@ try:
         page.locator("#workspace-form button").click()
         page.locator("#workspaces strong").filter(has_text="ui-test-project").wait_for(state="attached")
         page.get_by_role("button", name="Done adding projects", exact=True).click()
-        page.get_by_role("heading", name="You're connected", exact=True).wait_for()
+        page.get_by_role("heading", name="Your client is authorized", exact=True).wait_for()
         page.reload()
         expect(page.locator('.tab[data-tab="activity"]')).to_have_attribute("aria-current", "page")
         page.locator('.tab[data-tab="setup"]').click()

@@ -96,10 +96,13 @@ function render(s) {
   // Choose the landing page once. Polling must not override navigation, and
   // temporary connection outages must not restart onboarding for existing users.
   if (activeTab === null) tab(connected && projectsDone ? 'activity' : 'setup');
-  $('connection').textContent = s.settings.remotePaused ? 'Access paused' : connected ? 'Client connected' : 'Waiting for connection';
-  $('connection').className = `pill ${s.settings.remotePaused ? 'warn' : connected ? 'good' : ''}`;
-  if (changed('connection-attention', !s.mcpUrl || networkBusy || latestSetup?.status === 'failed')) $('activity-connection').open = !s.mcpUrl || networkBusy || latestSetup?.status === 'failed';
-  $('activity-connection-status').textContent = networkBusy ? 'Enabling Tailscale connection…' : latestSetup?.status === 'failed' ? `Connection setup failed: ${latestSetup.error}` : !s.mcpUrl ? 'Connection disabled' : `Public URL ready · ${$('connection').textContent}`;
+  const health = s.connectionHealth, reachable = health?.status === 'ready';
+  const networkIssue = ['dns_missing', 'unreachable'].includes(health?.status);
+  $('connection').textContent = s.settings.remotePaused ? 'Access paused' : networkIssue ? 'Connection unavailable' : connected ? (reachable ? 'Connection ready' : 'Client authorized') : 'Waiting for connection';
+  $('connection').className = `pill ${s.settings.remotePaused || networkIssue ? 'warn' : connected && reachable ? 'good' : ''}`;
+  const attention = !s.mcpUrl || networkBusy || networkIssue || latestSetup?.status === 'failed';
+  if (changed('connection-attention', attention)) $('activity-connection').open = attention;
+  $('activity-connection-status').textContent = networkBusy ? 'Enabling Tailscale connection…' : latestSetup?.status === 'failed' ? `Connection setup failed: ${latestSetup.error}` : !s.mcpUrl ? 'Connection disabled' : health?.message || 'Public connectivity has not been checked.';
   $('tailscale-enable').textContent = networkBusy ? 'Connecting…' : s.mcpUrl ? 'Reconnect' : 'Enable connection';
   $('stop').textContent = s.settings.remotePaused ? 'Resume access' : 'Pause access';
   $('stop').className = s.settings.remotePaused ? 'primary' : 'danger';
@@ -111,8 +114,8 @@ function render(s) {
   $('revoke').disabled = !connected;
   $('tailscale-enable').disabled = networkBusy;
   $('setup-title').textContent = !connected ? 'Connect your computer' : projectsDone ? 'Your connection' : 'Bring in your projects';
-  $('setup-description').textContent = !connected ? 'Enable the connection, connect ChatGPT, then bring in your projects.' : projectsDone ? 'Manage shared projects and access from your MCP clients.' : 'Your connection is ready. Import your Codex work or add projects manually.';
-  $('network-summary').textContent = address ? 'Your MCP server URL is configured.' : 'Create a secure URL for this computer.';
+  $('setup-description').textContent = !connected ? 'Enable the connection, connect ChatGPT, then bring in your projects.' : projectsDone ? 'Manage shared projects and access from your MCP clients.' : 'Your client is authorized. Import your Codex work or add projects manually.';
+  $('network-summary').textContent = address ? health?.message || 'Your MCP server URL is configured; public access has not been verified.' : 'Create a secure URL for this computer.';
   $('client-summary').textContent = connected ? `${s.connections.length} authorized client${s.connections.length === 1 ? '' : 's'}` : 'Copy the URL and authorize access.';
   $('project-summary').textContent = projectsDone ? (folder ? `${s.workspaces.length} shared project${s.workspaces.length === 1 ? '' : 's'}` : 'Project setup skipped. You can add projects anytime.') : 'Import your existing Codex work or add projects manually.';
   $('codex-import').disabled = !s.codexImport?.available;
@@ -123,7 +126,7 @@ function render(s) {
   }
   const next = !address ? 'network' : !connected ? 'client' : !projectsDone ? 'projects' : 'ready';
   if (stepKey !== next) { stepKey = next; for (const id of ['network', 'client', 'projects']) $(`step-${id}`).open = id === next; }
-  $('ready').classList.toggle('hidden', !(connected && projectsDone));
+  $('ready').classList.toggle('hidden', !(connected && projectsDone) || networkIssue);
   $('example-prompt').textContent = folder ? `Use Codex Link to list the files in ${s.workspaces[0].name}.` : 'Use Codex Link to show the connection status.';
   if (changed('workspaces', s.workspaces)) {
     $('workspaces').replaceChildren();
@@ -185,7 +188,7 @@ async function networkProgress() {
   const j = await api(`/api/job?id=${encodeURIComponent(setupJob)}`); loginLinks($('network-links'), j);
   networkBusy = ['running', 'queued'].includes(j.status); $('tailscale-enable').disabled = networkBusy;
   const latest = [...j.events].reverse().find(e => e.type === 'setup.message');
-  $('network-progress').textContent = j.status === 'failed' ? `Connection setup failed: ${j.error}` : j.status === 'completed' ? 'Your connection URL is ready.' : j.status === 'cancelled' ? 'Connection setup cancelled. You can try again.' : latest?.data.text || 'Creating your connection URL…';
+  $('network-progress').textContent = j.status === 'failed' ? `Connection setup failed: ${j.error}` : j.status === 'completed' ? (j.result?.connectionHealth?.message || 'Your connection URL is configured; public access has not been verified.') : j.status === 'cancelled' ? 'Connection setup cancelled. You can try again.' : latest?.data.text || 'Creating your connection URL…';
   if (!networkBusy) { setupJob = null; $('tailscale-enable').textContent = j.status === 'completed' ? 'Reconnect' : 'Try again'; if (j.status === 'failed') $('step-network').open = true; }
 }
 async function refresh() {

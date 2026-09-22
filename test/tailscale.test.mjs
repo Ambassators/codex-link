@@ -62,25 +62,39 @@ test('an already enabled managed Funnel is left running', async t => {
   assert.equal(saved().calls.some(args => args.includes('--bg') || args[0] === 'up'), false);
 });
 
+test('explicit reconnect restarts only the existing managed listener and preserves the issuer', async t => {
+  const host = 'fixture.tail-test.ts.net:443';
+  const { ts, config, context, saved } = setup(t, { connected: true, serve: {
+    TCP: { 443: { HTTPS: true } }, Web: { [host]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:43121' } } } }, AllowFunnel: { [host]: true }
+  } });
+  config.value.funnelManaged = true; config.setOrigin('https://fixture.tail-test.ts.net');
+  const result = await ts.enable(context, { reconnect: true });
+  assert.equal(result.changedOrigin, false);
+  const commands = saved().calls.filter(args => args[0] === 'funnel' && args[1] !== 'status');
+  assert.deepEqual(commands, [['funnel', '--https=443', 'off'], ['funnel', '--bg', '--https=443', 'http://127.0.0.1:43121']]);
+});
+
 test('startup enables a disabled connection after binding the public port', async t => {
   const { createBridge } = await import('../src/server.mjs');
   const { waitJob } = await import('./helpers.mjs');
   const { config, saved } = setup(t);
   config.value.publicOrigin = '';
-  const bridge = await createBridge({ config, adminPort: 0, publicPort: 0, autoEnableConnection: true });
+  const bridge = await createBridge({ config, adminPort: 0, publicPort: 0, autoEnableConnection: true,
+    checkConnection: async origin => ({ origin, status: 'dns_missing', message: 'Public DNS is missing.', checkedAt: Date.now() }) });
   try {
     const job = bridge.jobs.list().find(j => j.kind === 'setup');
     assert.ok(job);
     assert.equal((await waitJob(bridge.jobs, job.id)).status, 'completed');
     assert.ok(saved().calls.some(args => args.includes(`http://127.0.0.1:${bridge.publicPort}`)));
     assert.equal(bridge.state().settings.funnelManaged, true);
+    assert.equal(bridge.state().connectionHealth.status, 'dns_missing');
   } finally { await bridge.close(); }
 });
 
 test('startup preserves a custom public origin without invoking Tailscale', async t => {
   const { createBridge } = await import('../src/server.mjs');
   const { config, saved } = setup(t);
-  const bridge = await createBridge({ config, adminPort: 0, publicPort: 0, autoEnableConnection: true });
+  const bridge = await createBridge({ config, adminPort: 0, publicPort: 0, autoEnableConnection: true, checkConnection: async origin => ({ origin, status: 'ready' }) });
   try { assert.equal(bridge.jobs.list().length, 0); assert.equal(saved().calls, undefined); }
   finally { await bridge.close(); }
 });

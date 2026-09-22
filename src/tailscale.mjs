@@ -19,7 +19,7 @@ export class Tailscale {
       return { installed: true, connected: false, error: e.message };
     }
   }
-  async enable(context) {
+  async enable(context, { reconnect = false } = {}) {
     const command = tailscaleCommand(this.config);
     context.emit('setup.message', { text: 'Checking the Tailscale connection…' });
     let status = await this.status({ signal: context.signal });
@@ -47,9 +47,14 @@ export class Tailscale {
       && previous.Web?.[host]?.Handlers?.['/']?.Proxy === `http://127.0.0.1:${this.config.value.publicPort}`
       && previous.AllowFunnel?.[host] === true;
     try {
-      if (alreadyEnabled) {
+      if (alreadyEnabled && !reconnect) {
         this.config.save();
         return { publicOrigin: origin, mcpUrl: `${origin}/mcp`, changedOrigin: before !== origin };
+      }
+      if (alreadyEnabled && reconnect) {
+        context.emit('setup.message', { text: 'Restarting this app’s public tunnel…' });
+        const stopped = await runProcess(command, ['funnel', `--https=${port}`, 'off'], { signal: context.signal, timeoutMs: 15000 });
+        assert(stopped.exitCode === 0, stopped.stderr || 'Could not restart the public tunnel');
       }
       const result = await runProcess(command, ['funnel', '--bg', `--https=${port}`, `http://127.0.0.1:${this.config.value.publicPort}`], { signal: context.signal, timeoutMs: 10 * 60 * 1000, onOutput: (stream, text) => context.emit(`tailscale.${stream}`, { text }) });
       assert(result.exitCode === 0, result.stderr || result.stdout || 'Funnel could not start. Follow the policy-approval link in the setup output.');
