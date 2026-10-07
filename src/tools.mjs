@@ -4,6 +4,7 @@ import { runProcess, shellCommand, findExecutable } from './process.mjs';
 import { imageType } from './workspaces.mjs';
 import { installNativeComputerTools } from './native-computer-tools.mjs';
 import { installComputerReplTools } from './computer-repl-tools.mjs';
+import { installDecisionsComputerTools } from './decisions-computer.mjs';
 
 export const textResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value && typeof value === 'object' && !Array.isArray(value) ? value : { value } });
 export const imageResult = (data, mimeType, info = {}) => ({ content: [{ type: 'text', text: JSON.stringify(info) }, { type: 'image', mimeType, data }], structuredContent: info });
@@ -18,7 +19,7 @@ function cleanRequest(value) {
 }
 export class Tools {
   constructor(services) {
-    Object.assign(this, services); this.definitions = new Map(); this.install(); installNativeComputerTools(this); installComputerReplTools(this);
+    Object.assign(this, services); this.definitions = new Map(); this.install(); installNativeComputerTools(this); installComputerReplTools(this); installDecisionsComputerTools(this);
   }
   add(name, description, inputSchema, scopes, readOnly, handler, openWorld = false) {
     const securitySchemes = [{ type: 'oauth2', scopes }];
