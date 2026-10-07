@@ -78,6 +78,8 @@ export async function createBridge({ home, config = new Config(home), adminPort,
     publicOrigin: config.value.publicOrigin, mcpUrl: config.value.publicOrigin ? `${config.value.publicOrigin}/mcp` : null,
     connectionHealth,
     settings: Object.fromEntries(['remotePaused', 'autoApproveWrites', 'autoApproveShell', 'dangerousModeEnabled', 'computerAlwaysEnabled', 'funnelManaged', 'redirectUris'].map(k => [k, config.value[k]])),
+    decisionsComputer: computer.decisions.settings(),
+    decisionsSessions: computer.native.summary().sessions.filter(s => computer.native.sessions.get(s.id)?.owner === 'local-owner:local'),
     computerNative: { ...computer.native.summary(), replSessions: computer.repl?.summary() || [] }, computerEnabledUntil: config.value.computerEnabledUntil, workspaces: workspaces.list(),
     projectSetupComplete: !!config.value.projectSetupComplete, codexImport: codexImport.summary(),
     updates: updates.list(oauth.connections()),
@@ -120,6 +122,9 @@ export async function createBridge({ home, config = new Config(home), adminPort,
     assert(req.method === 'POST', 'Not found', 404);
     const body = await readBody(req, 4 * 1024 * 1024);
     switch (url.pathname) {
+      case '/api/computer/openai': return json(res, 200, computer.decisions.configure(body));
+      case '/api/computer/openai/run': return json(res, 200, (await tools.call('computer_api_run', body, localPrincipal)).structuredContent);
+      case '/api/computer/session/start': return json(res, 200, (await tools.call('computer_session_start', body, localPrincipal)).structuredContent);
       case '/api/updates': return json(res, 200, updates.add(body, oauth.connections()));
       case '/api/updates/cancel': return json(res, 200, updates.cancel(body.id));
       case '/api/workspaces': return json(res, 200, config.addWorkspace(body.name, body.root));
@@ -164,8 +169,8 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         config.value.computerEnabledUntil = 0;
         config.value.computerAlwaysEnabled = body.enabled;
         config.save();
-        if (!body.enabled) { computer.stop(); for (const j of jobs.store.data.jobs) if (j.kind === 'computer') jobs.cancel(j.id); }
-        if (body.enabled) for (const j of jobs.store.data.jobs) if (j.status === 'awaiting_approval' && !j.permissionRequest) jobs.approve(j.id, true);
+        if (!body.enabled) { computer.stop(); for (const j of jobs.store.data.jobs) if (['computer', 'computer_api'].includes(j.kind)) jobs.cancel(j.id); }
+        if (body.enabled) for (const j of jobs.store.data.jobs) if (j.status === 'awaiting_approval' && !j.permissionRequest && j.kind !== 'computer_api') jobs.approve(j.id, true);
         audit('owner.dangerous_mode', { enabled: body.enabled }); return json(res, 200, state());
       }
       case '/api/computer/permissions': {
@@ -180,7 +185,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         if (Object.hasOwn(body, 'legacyEnabled')) assert(typeof body.legacyEnabled === 'boolean', 'legacyEnabled must be boolean');
         computer.native.setRules(body.rules);
         computer.stop();
-        for (const job of jobs.store.data.jobs) if (job.kind === 'computer') jobs.cancel(job.id);
+        for (const job of jobs.store.data.jobs) if (['computer', 'computer_api'].includes(job.kind)) jobs.cancel(job.id);
         if (Object.hasOwn(body, 'legacyEnabled')) config.value.computerLegacyEnabled = body.legacyEnabled;
         config.save(); audit('owner.computer_policy', { rules: body.rules.length, legacyEnabled: config.value.computerLegacyEnabled === true });
         return json(res, 200, computer.native.summary());
@@ -199,7 +204,7 @@ export async function createBridge({ home, config = new Config(home), adminPort,
         const persistent = body.enabled && body.persistent === true;
         config.value.computerAlwaysEnabled = persistent;
         config.value.computerEnabledUntil = body.enabled && !persistent ? Date.now() + 15 * 60 * 1000 : 0; config.save();
-        if (!body.enabled) { computer.stop(); for (const j of jobs.store.data.jobs) if (j.kind === 'computer') jobs.cancel(j.id); }
+        if (!body.enabled) { computer.stop(); for (const j of jobs.store.data.jobs) if (['computer', 'computer_api'].includes(j.kind)) jobs.cancel(j.id); }
         audit('owner.computer_permission', { enabled: body.enabled, persistent }); return json(res, 200, state());
       }
       case '/api/tailscale/enable': {

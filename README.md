@@ -1,5 +1,7 @@
 # Codex Link
 
+Optional [OpenAI computer-use mode](docs/OPENAI_COMPUTER_USE.md) runs a Responses planner with a Decisions evaluator in an approved app session. Enter your own API key in Settings → OpenAI computer use, then run tasks with local action review.
+
 Connect ChatGPT or another MCP client to files, shell commands and optional desktop control on your computer. The app accepts OAuth-protected MCP requests; you approve and monitor them locally.
 
 ## Install and connect

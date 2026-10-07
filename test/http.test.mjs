@@ -31,6 +31,31 @@ async function server(t) {
   return { ...f, b, remote, local, admin, auth, token, rpc, tool };
 }
 
+test('OpenAI settings are owner-only, write-only and never exposed through MCP', async t => {
+  const { b, admin, remote, local, token, tool } = await server(t);
+  const key = 'sk-http-private-test';
+  assert.equal((await fetch(local + '/api/computer/openai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: key }) })).status, 401);
+  assert.equal((await fetch(remote + '/api/computer/openai', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: key }) })).status, 404);
+  const saved = await (await admin('/api/computer/openai', { apiKey: key, enabled: true })).json();
+  assert.equal(saved.hasApiKey, true); assert.ok(!JSON.stringify(saved).includes(key));
+  const state = await (await admin('/api/state')).json(); assert.ok(!JSON.stringify(state).includes(key));
+  const status = await tool('computer_api_status', {}); assert.equal(status.structuredContent.hasApiKey, true); assert.ok(!JSON.stringify(status).includes(key));
+  assert.equal((await admin('/api/computer/openai', { apiKey: 'invalid\nkey' })).status, 400);
+  assert.equal((await admin('/api/computer/openai', { endpoint: 'https://evil.example' })).status, 400);
+  assert.equal((await (await admin('/api/computer/openai', { apiKey: '' })).json()).hasApiKey, false);
+  const audit = readFileSync(path.join(b.config.home, 'audit.jsonl'), 'utf8'); assert.ok(!audit.includes(key));
+});
+
+test('dangerous mode preserves OpenAI run consent and desktop revocation cancels it', async t => {
+  const { b, admin } = await server(t);
+  let ran = false;
+  const job = b.jobs.create({ kind: 'computer_api', title: 'OpenAI test consent', approval: true }, () => { ran = true; });
+  await admin('/api/dangerous', { enabled: true });
+  assert.equal(b.jobs.get(job.id).status, 'awaiting_approval'); assert.equal(ran, false);
+  await admin('/api/computer', { enabled: false });
+  assert.equal(b.jobs.get(job.id).status, 'cancelled'); assert.equal(ran, false);
+});
+
 test('macOS exposes inspection but rejects removed structured input without executing it', async t => {
   const { b, tool, admin, rpc } = await server(t);
   const calls = [];
@@ -112,7 +137,7 @@ test('HTTP OAuth discovery, DCR, browser pairing, consent, PKCE token and authen
   assert.ok(token.refresh_token);
   const initialized = await rpc('initialize', { protocolVersion: '2025-11-25', clientInfo: { name: 'integration-test', version: '1' }, capabilities: {} }, token.access_token);
   assert.equal(initialized.body.result.serverInfo.name, 'codex-link');
-  const list = await rpc('tools/list', {}, token.access_token); assert.ok(list.body.result.tools.find(x => x.name === 'file_read')); assert.equal(list.body.result.tools.length, process.platform === 'darwin' ? 26 : 24); assert.ok(list.body.result.tools.every(x => !x.name.startsWith('codex_')));
+  const list = await rpc('tools/list', {}, token.access_token); assert.ok(list.body.result.tools.find(x => x.name === 'file_read')); assert.equal(list.body.result.tools.length, process.platform === 'darwin' ? 28 : 26); assert.ok(list.body.result.tools.every(x => !x.name.startsWith('codex_')));
   const revoked = await fetch(remote + '/oauth/revoke', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: client.client_id, token: token.access_token }) });
   assert.equal(revoked.status, 200); assert.equal((await rpc('ping', {}, token.access_token)).response.status, 401);
 });

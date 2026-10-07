@@ -177,6 +177,17 @@ function render(s) {
   const dangerousMode = !!s.settings.dangerousModeEnabled;
   const computerStatus = permanentComputer ? 'Desktop control is enabled permanently.' : s.computerEnabledUntil > Date.now() ? `Enabled until ${new Date(s.computerEnabledUntil).toLocaleTimeString()}` : 'Desktop control is disabled.';
   $('computer-status').textContent = computerStatus;
+  if (s.decisionsComputer && changed('decisionsComputer', s.decisionsComputer)) {
+    $('openai-enabled').checked = s.decisionsComputer.enabled;
+    for (const [id, key] of [['openai-planner', 'plannerModel'], ['openai-decider', 'decisionModel'], ['openai-steps', 'maxSteps']]) if (document.activeElement !== $(id)) $(id).value = s.decisionsComputer[key];
+    $('openai-key-status').textContent = s.decisionsComputer.hasApiKey ? 'An API key is saved. Its value is never displayed.' : 'No API key saved.';
+  }
+  const sessions = s.decisionsSessions || [];
+  if (changed('openai-sessions', sessions)) {
+    const current = $('openai-session').value;
+    $('openai-session').replaceChildren(...sessions.map(session => { const option = element('option', session.appName || session.appId); option.value = session.id; return option; }));
+    if (sessions.some(session => session.id === current)) $('openai-session').value = current;
+  }
   $('activity-computer-status').textContent = dangerousMode ? 'Dangerous mode is enabled: local approvals and application rules are bypassed; native and legacy desktop control are enabled. Upstream runtime consent, if requested, still requires approval.' : computerStatus;
   $('activity-dangerous').textContent = dangerousMode ? 'Disable dangerous mode' : 'Dangerously skip permissions';
   $('activity-dangerous').className = dangerousMode ? 'quiet' : 'danger';
@@ -230,6 +241,24 @@ bind('activity-computer-permanent', async () => {
   await enableComputer({ persistent: true }, 'Permanent computer use enabled.');
 });
 bind('computer-disable', () => api('/api/computer', { enabled: false }));
+form('openai-settings', async () => {
+  const patch = { enabled: $('openai-enabled').checked, plannerModel: $('openai-planner').value.trim(), decisionModel: $('openai-decider').value.trim(), maxSteps: Number($('openai-steps').value) };
+  const key = $('openai-key').value.trim(); if (key) patch.apiKey = key;
+  await api('/api/computer/openai', patch); $('openai-key').value = ''; notice('OpenAI settings saved.');
+});
+bind('openai-key-clear', async () => { await api('/api/computer/openai', { apiKey: '' }); $('openai-key').value = ''; notice('Saved API key removed.'); });
+bind('openai-apps-load', async () => {
+  const result = await api('/api/computer/windows');
+  $('openai-app').replaceChildren(...result.windows.map(app => { const option = element('option', app.appName || app.appId); option.value = app.windowId; return option; }));
+});
+bind('openai-session-start', async () => {
+  const job = await api('/api/computer/session/start', { windowId: $('openai-app').value, mode: state.platform === 'darwin' ? 'background' : 'foreground', idempotencyKey: crypto.randomUUID() });
+  selected = job.id; tab('activity'); notice('Review the app session in Activity.');
+});
+form('openai-run', async () => {
+  const job = await api('/api/computer/openai/run', { sessionId: $('openai-session').value, task: $('openai-task').value, idempotencyKey: crypto.randomUUID() });
+  selected = job.id; tab('activity'); notice('Review the OpenAI run in Activity before it starts.');
+});
 bind('revoke', async () => { if (confirm('Disconnect all clients and stop active requests?')) await api('/api/revoke', {}); });
 form('update-form', async () => { await api('/api/updates', { grantId: $('update-connection').value, text: $('update-text').value }); $('update-text').value = ''; notice('Update queued for the next tool response.'); });
 form('workspace-form', async () => { await api('/api/workspaces', { name: $('workspace-name').value.trim(), root: $('workspace-root').value.trim() }); $('workspace-form').reset(); notice('Folder added.'); });

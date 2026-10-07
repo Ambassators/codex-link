@@ -1414,5 +1414,102 @@
         }
       ]
     }
+  },
+  {
+    "name": "computer_api_status",
+    "description": "Read availability of the optional OpenAI Responses + Decisions computer-use mode. API keys are entered locally and never returned.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "securitySchemes": [
+      {
+        "type": "oauth2",
+        "scopes": [
+          "computer:use"
+        ]
+      }
+    ],
+    "_meta": {
+      "securitySchemes": [
+        {
+          "type": "oauth2",
+          "scopes": [
+            "computer:use"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "computer_api_run",
+    "description": "Run a bounded OpenAI Responses planner + Decisions evaluator in an existing approved computer session. The owner approves sending task/screenshots to OpenAI and reviews each input locally in Activity. Paid API key access is required. Poll job_get; completed job means the loop ended, so inspect its outcome. Never resubmit uncertain input with a new retry key.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Approved computer session ID"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Task to perform in this app"
+        },
+        "maxSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Optional step limit"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Retry key for this run"
+        }
+      },
+      "required": [
+        "sessionId",
+        "task",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "securitySchemes": [
+      {
+        "type": "oauth2",
+        "scopes": [
+          "computer:use"
+        ]
+      }
+    ],
+    "_meta": {
+      "securitySchemes": [
+        {
+          "type": "oauth2",
+          "scopes": [
+            "computer:use"
+          ]
+        }
+      ]
+    }
   }
 ]

@@ -2,10 +2,11 @@ import { fileURLToPath } from 'node:url';
 import { NativeComputer } from './native-computer.mjs';
 import { CodexComputer } from './codex-computer.mjs';
 import { ComputerRepl } from './computer-repl.mjs';
+import { DecisionsComputer } from './decisions-computer.mjs';
 import { pythonCommand, runProcess } from './process.mjs';
 import { assert } from './util.mjs';
 export class Computer {
-  constructor(config) { this.config = config; this.tail = Promise.resolve(); this.controllers = new Set(); this.generation = 0; this.native = process.platform === 'darwin' ? new CodexComputer(this) : new NativeComputer(this); this.repl = this.native.relay ? new ComputerRepl(this) : null; }
+  constructor(config) { this.config = config; this.tail = Promise.resolve(); this.controllers = new Set(); this.generation = 0; this.native = process.platform === 'darwin' ? new CodexComputer(this) : new NativeComputer(this); this.repl = this.native.relay ? new ComputerRepl(this) : null; this.decisions = new DecisionsComputer(this); }
   stop() { this.repl?.stop(); this.native.stop(); this.generation++; for (const c of this.controllers) c.abort(); }
   enabled() { return this.config.value.computerAlwaysEnabled || this.config.value.computerEnabledUntil > Date.now(); }
   legacyEnabled() { return !this.native.relay && (this.config.value.dangerousModeEnabled === true || this.config.value.computerLegacyEnabled === true); }

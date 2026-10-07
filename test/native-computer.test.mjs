@@ -195,9 +195,11 @@ test('oversized requests and invalid native protocols do not leak controllers', 
   const bad = fixture({ handler: () => ({ protocol: 99 }) });
   await assert.rejects(bad.native.invoke({ op: 'status' }), /protocol mismatch/); assert.equal(bad.native.controllers.size, 0);
 });
-test('permission changes invalidate sessions and independently gate legacy PyAutoGUI', async () => {
+test('permission changes invalidate sessions and independently gate legacy PyAutoGUI', async t => {
   const f = fixture(), s = await f.start();
   f.native.setRules([]); assert.throws(() => f.native.session(s.sessionId, principal), /expired/);
+  f.config.home = mkdtempSync(path.join(tmpdir(), 'codex-link-native-test-'));
+  t.after(() => rmSync(f.config.home, { recursive: true, force: true }));
   const computer = new Computer(f.config);
   await assert.rejects(computer.action({ action: 'screenshot' }), /legacy desktop control is disabled/);
 });

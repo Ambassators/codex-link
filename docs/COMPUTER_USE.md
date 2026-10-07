@@ -1,5 +1,7 @@
 # Computer Use
 
+For an optional app-scoped Responses + Decisions agent loop using your own API key, see [OpenAI computer-use mode](OPENAI_COMPUTER_USE.md). Configure it in local Settings or invoke `computer_api_run` from an approved session.
+
 On macOS, Codex Link uses the installed Codex desktop app’s experimental app-server API and Computer Use plugin. Windows retains the native UI Automation/Win32 backend. The connected client supplies the agent loop; the macOS adapter does not start model turns or create saved Codex tasks.
 
 ## Native-style model interface
